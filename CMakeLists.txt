@@ -8,7 +8,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 # Strict warnings as errors required by project policy
 add_compile_options(-Wall -Wextra -Werror -fPIC)
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-    add_compile_options(-Wno-unknown-warning-option -Wno-unused-but-set-variable -Wno-parentheses -Wno-dangling-else -Wno-char-subscripts -Wno-missing-braces -Wno-writable-strings -Wno-missing-field-initializers)
+    add_compile_options(-Wno-unknown-warning-option -Wno-unused-but-set-variable -Wno-unused-const-variable -Wno-parentheses -Wno-dangling-else -Wno-char-subscripts -Wno-missing-braces -Wno-writable-strings -Wno-missing-field-initializers)
 endif()
 
 # -----------------------------------------------------------------------------

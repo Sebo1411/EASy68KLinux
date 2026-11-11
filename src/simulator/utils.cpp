@@ -651,8 +651,8 @@ int cc_update (int x, int n, int z, int v, int c,
                long source, long dest, long result, long sizeMask, int shiftCount)
 {
   int	x_bit, n_bit, z_bit, v_bit, c_bit, mask;
-  long	Rm, Dm, Sm;
-  long	size;
+  long	Rm = 0, Dm = 0, Sm = 0;
+  long	size = 32;
 
   // assign the bits to their variables here
   x_bit = SR & xbit;

@@ -241,7 +241,7 @@ int writeObj()
     // Fill in the record length (including the checksum in the record length
     sprintf(recLen, "%02X", byteCount);
     sRec += 2;          // point to byte count location
-    strncpy(sRec, recLen, 2);
+    memcpy(sRec, recLen, 2);
 
     // Calculate checksum and add to record
     checksum = 0;

@@ -257,11 +257,10 @@ int	bitField(int mask, int size,
                   opDescriptor *source, opDescriptor *dest,
                   int *errorPtr)
 {
-  unsigned short type;
+  unsigned short type = mask & 0x0700;
 
   if (pass2)
   {
-    type = mask & 0x0700;
     if (type == BFINS)
       output((int) (mask | effAddr(dest)), WORD_SIZE);
     else

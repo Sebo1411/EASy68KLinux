@@ -1,9 +1,10 @@
 #include <QApplication>
+#include <QCoreApplication>
+#include <QProcess>
 #include <QTest>
 #include <QSignalSpy>
 #include <QFileInfo>
 #include <QFile>
-#include <cassert>
 #include <iostream>
 #include <cstdlib>
 #include "../src/gui/mainwindow.h"
@@ -15,6 +16,14 @@
 #include "../src/gui/hardwarewidget.h"
 #include "../src/gui/easybinwidget.h"
 #include "../src/gui/helpwidget.h"
+
+#define TEST_CHECK(cond) \
+    do { \
+        if (!(cond)) { \
+            std::cerr << "[GUI TEST FAILED] " << #cond << " at line " << __LINE__ << "\n"; \
+            return 1; \
+        } \
+    } while (0)
 
 extern int seg7loc, LEDloc, switchLoc, pbLoc;
 extern char *memory;
@@ -29,34 +38,35 @@ int main(int argc, char *argv[])
     MainWindow window;
     window.show();
 
-    // Ensure examples/hello.s68 exists
-    if (!QFileInfo::exists("examples/hello.s68")) {
-        std::system("build/easy68k-asm examples/hello.x68 -o examples/hello.s68 > /dev/null 2>&1 || ./easy68k-asm examples/hello.x68 -o examples/hello.s68 > /dev/null 2>&1");
-    }
+    QString appDir = QCoreApplication::applicationDirPath();
+    QString asmBin = appDir + "/easy68k-asm";
+    QString testS68 = appDir + "/gui_hello_test.s68";
+    int asmRc = QProcess::execute(asmBin, {"examples/hello.x68", "-o", testS68});
+    TEST_CHECK(asmRc == 0 && QFileInfo::exists(testS68));
 
     std::cout << "[GUI TEST] Testing SimulatorManager directly...\n";
     SimulatorManager sim;
 
-    bool loaded = sim.loadS68("examples/hello.s68");
+    bool loaded = sim.loadS68(testS68);
     if (!loaded) {
-        std::cerr << "[GUI TEST ERROR] Failed to load examples/hello.s68\n";
+        std::cerr << "[GUI TEST ERROR] Failed to load " << testS68.toStdString() << "\n";
         return 1;
     }
     std::cout << "[GUI TEST] Initial PC: 0x" << std::hex << sim.getPC() << std::dec << "\n";
-    assert(sim.getPC() == 0x1000);
+    TEST_CHECK(sim.getPC() == 0x1000);
 
     // Test stepping
     std::cout << "[GUI TEST] Stepping instruction...\n";
     sim.step();
     std::cout << "[GUI TEST] After step 1: PC = 0x" << std::hex << sim.getPC() << std::dec
               << ", Cycles = " << sim.getCycles() << "\n";
-    assert(sim.getPC() == 0x1006);
-    assert(sim.getCycles() > 0);
+    TEST_CHECK(sim.getPC() == 0x1006);
+    TEST_CHECK(sim.getCycles() > 0);
 
     // Test breakpoints
     std::cout << "[GUI TEST] Testing breakpoints...\n";
     sim.toggleBreakpoint(0x100C);
-    assert(sim.hasBreakpoint(0x100C));
+    TEST_CHECK(sim.hasBreakpoint(0x100C));
 
     // Run until breakpoint
     std::cout << "[GUI TEST] Running until breakpoint...\n";
@@ -69,17 +79,17 @@ int main(int argc, char *argv[])
     }
 
     std::cout << "[GUI TEST] Halted/Paused at PC: 0x" << std::hex << sim.getPC() << std::dec << "\n";
-    assert(sim.getPC() == 0x100C || sim.getPC() == 0x1012);
+    TEST_CHECK(sim.getPC() == 0x100C || sim.getPC() == 0x1012);
 
     sim.clearBreakpoints();
-    assert(!sim.hasBreakpoint(0x100C));
+    TEST_CHECK(!sim.hasBreakpoint(0x100C));
 
     // Test TerminalWidget TRAP #15 text output
     std::cout << "[GUI TEST] Testing TerminalWidget I/O...\n";
     TerminalWidget term;
     term.textOut("Hello from GUI test!\n");
     QTest::qWait(50);
-    assert(term.toPlainText().contains("Hello from GUI test!"));
+    TEST_CHECK(term.toPlainText().contains("Hello from GUI test!"));
 
     // Test MemoryView rendering
     std::cout << "[GUI TEST] Testing MemoryView...\n";
@@ -97,22 +107,22 @@ int main(int argc, char *argv[])
     // Test HardwareWidget: 7-segment, LEDs, Switches, Pushbuttons
     std::cout << "[GUI TEST] Testing HardwareWidget peripherals...\n";
     HardwareWidget hw;
-    assert(memory != nullptr);
+    TEST_CHECK(memory != nullptr);
 
     // 1. Test 7-Segment display ($E00000..$E0000E)
     memory[seg7loc & 0xFFFFFF] = 0x7D;      // Digit 0 = '6'
     memory[(seg7loc + 2) & 0xFFFFFF] = 0x7F; // Digit 1 = '8'
     hw.updateHardware();
-    assert(hw.getSevenSegmentValue(0) == 0x7D);
-    assert(hw.getSevenSegmentValue(1) == 0x7F);
+    TEST_CHECK(hw.getSevenSegmentValue(0) == 0x7D);
+    TEST_CHECK(hw.getSevenSegmentValue(1) == 0x7F);
 
     // 2. Test LED bank ($E00010)
     memory[LEDloc & 0xFFFFFF] = static_cast<char>(0xA5);
     hw.updateHardware();
-    assert(hw.getLEDValue() == 0xA5);
+    TEST_CHECK(hw.getLEDValue() == 0xA5);
 
     // 3. Test Pushbuttons default (normally high: 0xFF)
-    assert(hw.getPushbuttonValue() == 0xFF);
+    TEST_CHECK(hw.getPushbuttonValue() == 0xFF);
 
     // 4. Test 2D Graphics Canvas via TerminalWidget forwarding
     std::cout << "[GUI TEST] Testing 2D Graphics Canvas API...\n";
@@ -125,29 +135,29 @@ int main(int argc, char *argv[])
 
     // Draw single pixel
     term.drawPixel(10, 10);
-    assert(hw.getCanvasPixel(10, 10) == QColor(0, 255, 255));
-    assert(term.getPixel(10, 10) == 0x00FFFF00);
+    TEST_CHECK(hw.getCanvasPixel(10, 10) == QColor(0, 255, 255));
+    TEST_CHECK(term.getPixel(10, 10) == 0x00FFFF00);
 
     // Draw filled rectangle (50, 50) to (100, 100)
     term.rectangle(50, 50, 100, 100);
-    assert(hw.getCanvasPixel(75, 75) == QColor(255, 0, 0));
+    TEST_CHECK(hw.getCanvasPixel(75, 75) == QColor(255, 0, 0));
 
     // Draw line
     term.line(0, 0, 20, 20);
-    assert(hw.getCanvasPixel(0, 0) == QColor(0, 255, 255));
+    TEST_CHECK(hw.getCanvasPixel(0, 0) == QColor(0, 255, 255));
 
     // Test EasyBinWidget
     std::cout << "[GUI TEST] Testing EasyBinWidget...\n";
     EasyBinWidget easyBin;
-    assert(easyBin.inspectSRecordFile("examples/hello.s68") == true);
+    TEST_CHECK(easyBin.inspectSRecordFile(testS68) == true);
 
     // Round-trip S68 -> BIN -> S68
-    QString tmpBin = "build/gui_test_tmp.bin";
-    QString tmpS68 = "build/gui_test_tmp.s68";
-    assert(easyBin.convertS68ToBin("examples/hello.s68", tmpBin, 0) == true);
-    assert(QFileInfo::exists(tmpBin));
-    assert(easyBin.convertBinToS68(tmpBin, tmpS68, 0x1000, 0x1000, 0) == true);
-    assert(QFileInfo::exists(tmpS68));
+    QString tmpBin = appDir + "/gui_test_tmp.bin";
+    QString tmpS68 = appDir + "/gui_test_tmp.s68";
+    TEST_CHECK(easyBin.convertS68ToBin(testS68, tmpBin, 0) == true);
+    TEST_CHECK(QFileInfo::exists(tmpBin));
+    TEST_CHECK(easyBin.convertBinToS68(tmpBin, tmpS68, 0x1000, 0x1000, 0) == true);
+    TEST_CHECK(QFileInfo::exists(tmpS68));
     QFile::remove(tmpBin);
     QFile::remove(tmpS68);
 
@@ -156,12 +166,12 @@ int main(int argc, char *argv[])
     HelpWidget help;
     QString helpRoot = help.findHelpRootDir();
     std::cout << "[GUI TEST] Help Root Dir: " << helpRoot.toStdString() << "\n";
-    assert(QFileInfo::exists(helpRoot + "/main.htm"));
+    TEST_CHECK(QFileInfo::exists(helpRoot + "/main.htm"));
     help.loadPage("main.htm");
     help.loadPage("SIMHELP/Hardware.htm");
 
-    // Clean up temporary s68 file if created
-    QFile::remove("examples/hello.s68");
+    // Clean up temporary s68 file
+    QFile::remove(testS68);
 
     std::cout << "[GUI TEST] ALL TESTS (CORE, HARDWARE, GRAPHICS, EASYBIN, HELP) PASSED!\n";
     return 0;

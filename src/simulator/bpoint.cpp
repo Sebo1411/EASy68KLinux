@@ -116,7 +116,7 @@ bool BPoint::isBreak() {
         // to false if any of the break conditions fail
         bool finalCondition = true;
 
-        long * curEA;
+        long * curEA = nullptr;
 
         if(type == PC_REG_TYPE && typeId != PC_TYPE_ID) {
                 // Get the effective address for one of the registers.
@@ -160,8 +160,8 @@ bool BPoint::isBreak() {
         if(!finalCondition) return false;
 
         // Is the value in the correct range?
-        long valueFound;
-        long curSize;
+        long valueFound = 0;
+        long curSize = LONG_MASK;
         if(size == BYTE_SIZE)
                 curSize = BYTE_MASK;
         else if(size == WORD_SIZE)

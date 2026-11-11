@@ -316,8 +316,8 @@ int	TAS()
 // 68020 simulator code used in the UAE (Unix Amiga Emulator)
 int	BIT_FIELD()
 {
-  long	extra, bf0, bf1, bf2, bf3, bf4;
-  int width, destAddr, error = SUCCESS;
+  long	extra, bf0 = 0, bf1 = 0, bf2 = 0, bf3 = 0, bf4 = 0;
+  int width = 0, destAddr = 0, error = SUCCESS;
   int x_bit, n_bit, z_bit, v_bit, c_bit;
   uint offset, tmp;
   const int BFTST = 0, BFEXTU = 1, BFCHG = 2, BFEXTS = 3, BFCLR = 4, BFFF0 = 5;

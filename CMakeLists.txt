@@ -83,7 +83,7 @@ target_include_directories(easybin PRIVATE src/easybin)
 # -----------------------------------------------------------------------------
 # 4. Qt6 Native GUI IDE & Simulator (easy68k-gui)
 # -----------------------------------------------------------------------------
-find_package(Qt6 COMPONENTS Core Gui Widgets Test QUIET)
+find_package(Qt6 COMPONENTS Core Gui Widgets Network Test QUIET)
 
 if(Qt6_FOUND)
     set(CMAKE_AUTOMOC ON)
@@ -102,12 +102,14 @@ if(Qt6_FOUND)
         src/gui/easybinwidget.cpp
         src/gui/helpwidget.cpp
         src/gui/simulatormanager.cpp
+        src/gui/updater.cpp
         src/easybin/fileio.cpp
     )
 
     add_executable(easy68k-gui ${GUI_SOURCES})
+    target_compile_definitions(easy68k-gui PRIVATE EASY68K_VERSION_STRING="${PROJECT_VERSION}")
     target_include_directories(easy68k-gui PRIVATE src/gui src/simulator src/easybin)
-    target_link_libraries(easy68k-gui PRIVATE easy68k_sim_core Qt6::Widgets Qt6::Gui Qt6::Core)
+    target_link_libraries(easy68k-gui PRIVATE easy68k_sim_core Qt6::Widgets Qt6::Gui Qt6::Core Qt6::Network)
 
     if(TARGET Qt6::Test)
         add_executable(test_gui
@@ -122,10 +124,12 @@ if(Qt6_FOUND)
             src/gui/easybinwidget.cpp
             src/gui/helpwidget.cpp
             src/gui/simulatormanager.cpp
+            src/gui/updater.cpp
             src/easybin/fileio.cpp
         )
+        target_compile_definitions(test_gui PRIVATE EASY68K_VERSION_STRING="${PROJECT_VERSION}")
         target_include_directories(test_gui PRIVATE src/gui src/simulator src/easybin)
-        target_link_libraries(test_gui PRIVATE easy68k_sim_core Qt6::Widgets Qt6::Gui Qt6::Core Qt6::Test)
+        target_link_libraries(test_gui PRIVATE easy68k_sim_core Qt6::Widgets Qt6::Gui Qt6::Core Qt6::Network Qt6::Test)
     endif()
 else()
     message(WARNING "Qt6 not found. easy68k-gui target will not be built.")
@@ -157,6 +161,7 @@ install(TARGETS easy68k-asm easy68k-sim easybin
 if(TARGET easy68k-gui)
     install(TARGETS easy68k-gui RUNTIME DESTINATION bin)
     install(FILES desktop/easy68k.desktop DESTINATION share/applications)
+    install(FILES desktop/easy68k.appdata.xml DESTINATION share/metainfo)
     install(FILES desktop/easy68k.svg DESTINATION share/icons/hicolor/scalable/apps)
 endif()
 
@@ -179,7 +184,7 @@ set(CPACK_RESOURCE_FILE_README "${CMAKE_CURRENT_SOURCE_DIR}/README.md")
 # Debian package generator settings
 set(CPACK_DEBIAN_PACKAGE_MAINTAINER "EASy68K Linux Maintainers <https://github.com/Sebo1411/EASy68KLinux>")
 set(CPACK_DEBIAN_PACKAGE_SECTION "devel")
-set(CPACK_DEBIAN_PACKAGE_DEPENDS "libqt6widgets6, libqt6gui6, libqt6core6")
+set(CPACK_DEBIAN_PACKAGE_DEPENDS "libqt6widgets6, libqt6gui6, libqt6core6, libqt6network6")
 
 # RPM package generator settings
 set(CPACK_RPM_PACKAGE_LICENSE "GPL-2.0-or-later")

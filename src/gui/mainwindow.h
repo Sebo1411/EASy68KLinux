@@ -17,6 +17,7 @@ class SimulatorManager;
 class HardwareWidget;
 class EasyBinWidget;
 class HelpWidget;
+class Updater;
 
 class MainWindow : public QMainWindow
 {
@@ -31,6 +32,7 @@ public:
     HelpWidget* getHelpWidget() const { return helpWidget; }
     TerminalWidget* getTerminalWidget() const { return terminalWidget; }
     SimulatorManager* getSimulatorManager() const { return simManager; }
+    Updater* getUpdater() const { return updater; }
 
 private slots:
     void newFile();
@@ -77,6 +79,7 @@ private:
     QPlainTextEdit *disassemblyView;
 
     SimulatorManager *simManager;
+    Updater *updater = nullptr;
     QProcess *assemblerProcess = nullptr;
 
     QString currentFilePath;
@@ -109,6 +112,9 @@ private:
     QAction *helpDocAct;
     QAction *helpHwAct;
     QAction *helpPdfAct;
+    QAction *checkUpdatesAct;
+    QAction *autoUpdateCheckAct;
+    QAction *repoSetupAct;
 };
 
 #endif // MAINWINDOW_H

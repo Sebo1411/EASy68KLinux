@@ -16,6 +16,8 @@
 #include "../src/gui/hardwarewidget.h"
 #include "../src/gui/easybinwidget.h"
 #include "../src/gui/helpwidget.h"
+#include "../src/gui/updater.h"
+#include <QCryptographicHash>
 
 #define TEST_CHECK(cond) \
     do { \
@@ -173,6 +175,130 @@ int main(int argc, char *argv[])
     // Clean up temporary s68 file
     QFile::remove(testS68);
 
-    std::cout << "[GUI TEST] ALL TESTS (CORE, HARDWARE, GRAPHICS, EASYBIN, HELP) PASSED!\n";
+    // Test native Auto-Updater
+    std::cout << "[GUI TEST] Testing native Auto-Updater...\n";
+    TEST_CHECK(window.getUpdater() != nullptr);
+
+    // 1. Version comparison logic
+    TEST_CHECK(Updater::isNewerVersion("5.16.1", "v5.16.2") == true);
+    TEST_CHECK(Updater::isNewerVersion("5.16.1", "v5.16.1") == false);
+    TEST_CHECK(Updater::isNewerVersion("5.16.1", "v5.15.9") == false);
+    TEST_CHECK(Updater::isNewerVersion("5.16.1", "6.0.0") == true);
+    TEST_CHECK(Updater::isNewerVersion("v5.16.1", "5.16.2") == true);
+    TEST_CHECK(!Updater::currentVersion().isEmpty());
+    TEST_CHECK(Updater::repositorySlug() == "Sebo1411/EASy68KLinux");
+    TEST_CHECK(Updater::aptRepoSetupCommand().contains("setup-apt.sh"));
+    TEST_CHECK(Updater::rpmRepoSetupCommand().contains("setup-rpm.sh"));
+
+    // 2. Parse GitHub Releases API JSON
+    QByteArray releaseJson = R"({
+        "tag_name": "v5.16.2",
+        "html_url": "https://github.com/Sebo1411/EASy68KLinux/releases/tag/v5.16.2",
+        "published_at": "2026-11-12T10:00:00Z",
+        "body": "## EASy68K v5.16.2\n- Native auto-updater\n- Verification fixes",
+        "assets": [
+            {
+                "name": "easy68k-5.16.2-x86_64.AppImage",
+                "browser_download_url": "https://github.com/Sebo1411/EASy68KLinux/releases/download/v5.16.2/easy68k-5.16.2-x86_64.AppImage",
+                "size": 25165824
+            },
+            {
+                "name": "easy68k-5.16.2-amd64.deb",
+                "browser_download_url": "https://github.com/Sebo1411/EASy68KLinux/releases/download/v5.16.2/easy68k-5.16.2-amd64.deb",
+                "size": 18874368
+            },
+            {
+                "name": "easy68k-5.16.2-1.x86_64.rpm",
+                "browser_download_url": "https://github.com/Sebo1411/EASy68KLinux/releases/download/v5.16.2/easy68k-5.16.2-1.x86_64.rpm",
+                "size": 19922944
+            },
+            {
+                "name": "easy68k-5.16.2-linux-x86_64.tar.gz",
+                "browser_download_url": "https://github.com/Sebo1411/EASy68KLinux/releases/download/v5.16.2/easy68k-5.16.2-linux-x86_64.tar.gz",
+                "size": 15728640
+            },
+            {
+                "name": "SHA256SUMS.txt",
+                "browser_download_url": "https://github.com/Sebo1411/EASy68KLinux/releases/download/v5.16.2/SHA256SUMS.txt",
+                "size": 512
+            }
+        ]
+    })";
+
+    ReleaseInfo info = Updater::parseReleaseJson(releaseJson);
+    TEST_CHECK(info.isValid());
+    TEST_CHECK(info.tagName == "v5.16.2");
+    TEST_CHECK(info.version == "5.16.2");
+    TEST_CHECK(info.htmlUrl == "https://github.com/Sebo1411/EASy68KLinux/releases/tag/v5.16.2");
+    TEST_CHECK(info.publishedAt == "2026-11-12T10:00:00Z");
+    TEST_CHECK(info.body.contains("Native auto-updater"));
+    TEST_CHECK(info.assets.size() == 5);
+    TEST_CHECK(info.sha256SumsUrl == "https://github.com/Sebo1411/EASy68KLinux/releases/download/v5.16.2/SHA256SUMS.txt");
+
+    // 3. Asset selection logic
+    qputenv("APPIMAGE", "/tmp/fake-EASy68K.AppImage");
+    ReleaseAsset bestAppImage = Updater::selectBestAssetForSystem(info);
+    TEST_CHECK(bestAppImage.name == "easy68k-5.16.2-x86_64.AppImage");
+
+    qunsetenv("APPIMAGE");
+    ReleaseAsset bestSys = Updater::selectBestAssetForSystem(info);
+    if (QFile::exists("/usr/bin/dpkg")) {
+        TEST_CHECK(bestSys.name == "easy68k-5.16.2-amd64.deb");
+    } else if (QFile::exists("/usr/bin/rpm")) {
+        TEST_CHECK(bestSys.name == "easy68k-5.16.2-1.x86_64.rpm");
+    } else {
+        TEST_CHECK(bestSys.name.endsWith(".AppImage") || bestSys.name.endsWith(".tar.gz"));
+    }
+
+    // 4. Real SHA-256 calculation and file integrity verification
+    QString testUpdateFile = appDir + "/test_update_file.bin";
+    QFile binOut(testUpdateFile);
+    TEST_CHECK(binOut.open(QIODevice::WriteOnly));
+    QByteArray samplePayload = "EASy68K Update Package Payload\xDE\xAD\xBE\xEF\x00\x42";
+    binOut.write(samplePayload);
+    binOut.close();
+
+    QCryptographicHash hashCalc(QCryptographicHash::Sha256);
+    hashCalc.addData(samplePayload);
+    QString realHexHash = QString::fromLatin1(hashCalc.result().toHex()).toLower();
+    TEST_CHECK(realHexHash.length() == 64);
+
+    QString sha256SumsFileContent = QString(
+        "# Automated Release Checksums\n"
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  other.deb\n"
+        "%1  test_update_file.bin\n"
+        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef *dummy.rpm\n"
+    ).arg(realHexHash);
+
+    QString parsedHash = Updater::parseSha256ForAsset(sha256SumsFileContent, "test_update_file.bin");
+    TEST_CHECK(parsedHash == realHexHash);
+
+    QString missingHash = Updater::parseSha256ForAsset(sha256SumsFileContent, "non_existent.pkg");
+    TEST_CHECK(missingHash.isEmpty());
+
+    // Verify valid SHA-256
+    TEST_CHECK(Updater::verifyFileSha256(testUpdateFile, realHexHash) == true);
+    // Verify case-insensitivity
+    TEST_CHECK(Updater::verifyFileSha256(testUpdateFile, realHexHash.toUpper()) == true);
+
+    // Verify tampered hash fails
+    TEST_CHECK(Updater::verifyFileSha256(testUpdateFile, "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855") == false);
+
+    // Tamper file content and verify it fails
+    TEST_CHECK(binOut.open(QIODevice::Append));
+    binOut.write("tampered");
+    binOut.close();
+    TEST_CHECK(Updater::verifyFileSha256(testUpdateFile, realHexHash) == false);
+
+    QFile::remove(testUpdateFile);
+
+    // 5. Settings persistence
+    bool origSetting = Updater::autoCheckOnStartup();
+    Updater::setAutoCheckOnStartup(!origSetting);
+    TEST_CHECK(Updater::autoCheckOnStartup() == !origSetting);
+    Updater::setAutoCheckOnStartup(origSetting);
+    TEST_CHECK(Updater::autoCheckOnStartup() == origSetting);
+
+    std::cout << "[GUI TEST] ALL TESTS (CORE, HARDWARE, GRAPHICS, EASYBIN, HELP, UPDATER) PASSED!\n";
     return 0;
 }

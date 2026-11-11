@@ -34,6 +34,7 @@ jobs:
             qt6-base-dev \
             libqt6widgets6 \
             libqt6gui6 \
+            libqt6network6 \
             libqt6test6 \
             xvfb \
             ${{ matrix.compiler == 'clang++' && 'clang' || '' }}
@@ -70,6 +71,7 @@ jobs:
             qt6-base-dev \
             libqt6widgets6 \
             libqt6gui6 \
+            libqt6network6 \
             libqt6test6 \
             xvfb \
             libasan8 \
@@ -92,7 +94,7 @@ jobs:
           xvfb-run --auto-servernum ctest --test-dir build-san --output-on-failure
 
   package:
-    name: Package (DEB, RPM, TGZ & AppImage)
+    name: Package (DEB, RPM, TGZ, AppImage zsync & Repo)
     runs-on: ubuntu-24.04
     needs: [build-and-test, sanitizers]
     steps:
@@ -108,8 +110,14 @@ jobs:
             qt6-base-dev \
             libqt6widgets6 \
             libqt6gui6 \
+            libqt6network6 \
             libqt6test6 \
             rpm \
+            dpkg-dev \
+            apt-utils \
+            createrepo-c \
+            zsync \
+            librsvg2-bin \
             file \
             wget \
             xvfb
@@ -134,51 +142,20 @@ jobs:
           mkdir -p ../dist
           cp *.tar.gz *.deb *.rpm ../dist/
 
-      - name: Build Standalone AppImage
+      - name: Build Standalone AppImage with zsync Delta Metadata
         run: |
-          mkdir -p AppDir/usr/bin AppDir/usr/lib AppDir/usr/plugins/platforms AppDir/usr/share/applications AppDir/usr/share/icons/hicolor/scalable/apps AppDir/usr/share/easy68k AppDir/usr/share/doc/easy68k
+          chmod +x scripts/build_appimage.sh
+          ./scripts/build_appimage.sh build dist 5.16.1 Sebo1411 EASy68KLinux
 
-          # Copy binaries
-          cp build/easy68k-gui AppDir/usr/bin/
-          cp build/easy68k-asm AppDir/usr/bin/
-          cp build/easy68k-sim AppDir/usr/bin/
-          cp build/easybin AppDir/usr/bin/
-
-          # Bundle Qt6 libraries and platform plugins
-          ldd build/easy68k-gui | awk '/=> \/.*libQt6|libicu|libdouble-conversion|libb2|libpcre2-16/ {print $3}' | xargs -r -I{} cp -L "{}" AppDir/usr/lib/
-          for plugin_dir in /usr/lib/x86_64-linux-gnu/qt6/plugins/platforms /usr/lib64/qt6/plugins/platforms; do
-            if [ -d "$plugin_dir" ]; then
-              cp -r "$plugin_dir"/* AppDir/usr/plugins/platforms/ || true
-            fi
-          done
-
-          # Copy desktop integration files
-          cp desktop/easy68k.desktop AppDir/
-          cp desktop/easy68k.desktop AppDir/usr/share/applications/
-          cp desktop/easy68k.svg AppDir/
-          ln -sf easy68k.svg AppDir/.DirIcon
-          cp desktop/easy68k.svg AppDir/usr/share/icons/hicolor/scalable/apps/
-
-          # Copy documentation and examples
-          cp -r docs/help AppDir/usr/share/doc/easy68k/
-          cp -r examples AppDir/usr/share/easy68k/
-
-          # Create AppRun entrypoint script
-          cat << 'EOF' > AppDir/AppRun
-          #!/usr/bin/env bash
-          HERE="$(dirname "$(readlink -f "${0}")")"
-          export PATH="${HERE}/usr/bin:${PATH}"
-          export LD_LIBRARY_PATH="${HERE}/usr/lib:${LD_LIBRARY_PATH:-}"
-          export QT_PLUGIN_PATH="${HERE}/usr/plugins:${QT_PLUGIN_PATH:-}"
-          exec "${HERE}/usr/bin/easy68k-gui" "$@"
-          EOF
-          chmod +x AppDir/AppRun
-
-          # Download and run appimagetool
-          wget -q https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage -O appimagetool
-          chmod +x appimagetool
-          ARCH=x86_64 ./appimagetool --appimage-extract-and-run AppDir dist/easy68k-linux-5.16.1-x86_64.AppImage
-          chmod +x dist/easy68k-linux-5.16.1-x86_64.AppImage
+      - name: Verify Automated APT & RPM Repository Generation
+        run: |
+          chmod +x scripts/generate_repos.sh
+          ./scripts/generate_repos.sh dist gh-pages-root "https://sebo1411.github.io/EASy68KLinux" "Sebo1411/EASy68KLinux"
+          test -s gh-pages-root/apt/Packages.gz
+          test -s gh-pages-root/apt/Release
+          test -s gh-pages-root/rpm/repodata/repomd.xml
+          test -x gh-pages-root/setup-apt.sh
+          test -x gh-pages-root/setup-rpm.sh
 
       - name: Generate Checksums
         run: |

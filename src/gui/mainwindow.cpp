@@ -8,6 +8,7 @@
 #include "helpwidget.h"
 #include "terminalwidget.h"
 #include "simulatormanager.h"
+#include "updater.h"
 
 #include <QMenuBar>
 #include <QMenu>
@@ -19,6 +20,8 @@
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QCoreApplication>
+#include <QGuiApplication>
+#include <QTimer>
 #include <QFileInfo>
 #include <QRegularExpression>
 #include <QFont>
@@ -29,6 +32,8 @@
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
 {
+    updater = new Updater(this);
+
     setupUi();
     createActions();
     createMenus();
@@ -46,6 +51,12 @@ MainWindow::MainWindow(QWidget *parent)
 
     setCurrentFile(QString());
     resize(1100, 750);
+
+    if (Updater::autoCheckOnStartup() && QGuiApplication::platformName() != QStringLiteral("offscreen")) {
+        QTimer::singleShot(2000, this, [this]() {
+            updater->checkForUpdates(true);
+        });
+    }
 }
 
 MainWindow::~MainWindow()
@@ -239,6 +250,23 @@ void MainWindow::createActions()
     connect(helpPdfAct, &QAction::triggered, this, [this]() {
         helpWidget->openQuickRefPdf();
     });
+
+    checkUpdatesAct = new QAction(tr("&Check for Updates..."), this);
+    connect(checkUpdatesAct, &QAction::triggered, this, [this]() {
+        updater->checkForUpdates(false);
+    });
+
+    autoUpdateCheckAct = new QAction(tr("Check for Updates on &Startup"), this);
+    autoUpdateCheckAct->setCheckable(true);
+    autoUpdateCheckAct->setChecked(Updater::autoCheckOnStartup());
+    connect(autoUpdateCheckAct, &QAction::toggled, this, [](bool checked) {
+        Updater::setAutoCheckOnStartup(checked);
+    });
+
+    repoSetupAct = new QAction(tr("Configure APT / RPM Auto-Update &Repository..."), this);
+    connect(repoSetupAct, &QAction::triggered, this, [this]() {
+        updater->showRepoSetupDialog();
+    });
 }
 
 void MainWindow::createMenus()
@@ -270,6 +298,10 @@ void MainWindow::createMenus()
     helpMenu->addAction(helpDocAct);
     helpMenu->addAction(helpHwAct);
     helpMenu->addAction(helpPdfAct);
+    helpMenu->addSeparator();
+    helpMenu->addAction(checkUpdatesAct);
+    helpMenu->addAction(autoUpdateCheckAct);
+    helpMenu->addAction(repoSetupAct);
     helpMenu->addSeparator();
     helpMenu->addAction(aboutAct);
 }

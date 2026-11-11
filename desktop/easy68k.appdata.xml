@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>easy68k.desktop</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-2.0-or-later</project_license>
+  <name>EASy68K</name>
+  <summary>Motorola 68000 Assembler, Simulator and Native Qt6 IDE</summary>
+  <description>
+    <p>
+      EASy68K is an open-source Motorola 68000 structured macro assembler,
+      simulator, and integrated development environment for Linux.
+    </p>
+    <p>
+      It features a native Qt6 IDE with real-time assembly, instruction stepping,
+      hardware peripheral emulation (7-segment displays, LEDs, switches, pushbuttons),
+      memory inspection, and 2D graphics support.
+    </p>
+  </description>
+  <launchable type="desktop-id">easy68k.desktop</launchable>
+  <url type="homepage">https://github.com/Sebo1411/EASy68KLinux</url>
+  <url type="bugtracker">https://github.com/Sebo1411/EASy68KLinux/issues</url>
+  <developer>
+    <name>EASy68K Linux Maintainers</name>
+  </developer>
+  <provides>
+    <binary>easy68k-gui</binary>
+    <binary>easy68k-asm</binary>
+    <binary>easy68k-sim</binary>
+    <binary>easybin</binary>
+  </provides>
+  <releases>
+    <release version="5.16.1" date="2026-11-11">
+      <description>
+        <p>Release 5.16.1 includes the native auto-updater and system repository integration.</p>
+      </description>
+    </release>
+  </releases>
+  <content_rating type="oars-1.1"/>
+</component>

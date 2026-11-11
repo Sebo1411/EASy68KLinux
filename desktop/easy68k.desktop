@@ -1,0 +1,11 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=EASy68K
+GenericName=Motorola 68000 IDE & Simulator
+Comment=Native Linux Motorola 68000 Cross-Assembler and Simulator
+Exec=easy68k-gui %F
+Icon=easy68k
+Terminal=false
+Categories=Development;IDE;
+MimeType=text/x-assembly;

@@ -1,0 +1,13 @@
+build/
+build-*/
+_CPack_Packages/
+*.deb
+*.rpm
+*.tar.gz
+*.AppImage
+*.s68
+*.l68
+*.bin
+!examples/*.x68
+!tests/*.x68
+!tests/inc_data.bin

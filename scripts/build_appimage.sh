@@ -42,7 +42,7 @@ done
 # 3. Copy desktop integration, AppStream metainfo, and icons
 cp desktop/easy68k.desktop AppDir/
 cp desktop/easy68k.desktop AppDir/usr/share/applications/
-cp desktop/easy68k.appdata.xml AppDir/usr/share/metainfo/
+cp desktop/easy68k.appdata.xml AppDir/usr/share/metainfo/io.github.sebo1411.easy68k.appdata.xml
 cp desktop/easy68k.svg AppDir/
 cp desktop/easy68k.svg AppDir/usr/share/icons/hicolor/scalable/apps/
 
@@ -82,7 +82,7 @@ UPDATE_INFO="gh-releases-zsync|${GITHUB_USER}|${GITHUB_REPO}|latest|easy68k-linu
 
 # Build AppImage with embedded zsync update information
 ARCH=x86_64 ./appimagetool --appimage-extract-and-run \
-  -u "${UPDATE_INFO}" \
+  -n -u "${UPDATE_INFO}" \
   AppDir "${APPIMAGE_PATH}"
 chmod +x "${APPIMAGE_PATH}"
 

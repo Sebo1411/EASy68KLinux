@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <component type="desktop-application">
-  <id>easy68k.desktop</id>
+  <id>io.github.sebo1411.easy68k</id>
   <metadata_license>CC0-1.0</metadata_license>
   <project_license>GPL-2.0-or-later</project_license>
   <name>EASy68K</name>
@@ -19,10 +19,11 @@
   <launchable type="desktop-id">easy68k.desktop</launchable>
   <url type="homepage">https://github.com/Sebo1411/EASy68KLinux</url>
   <url type="bugtracker">https://github.com/Sebo1411/EASy68KLinux/issues</url>
-  <developer>
+  <developer id="io.github.sebo1411">
     <name>EASy68K Linux Maintainers</name>
   </developer>
   <provides>
+    <id>easy68k.desktop</id>
     <binary>easy68k-gui</binary>
     <binary>easy68k-asm</binary>
     <binary>easy68k-sim</binary>

@@ -95,8 +95,10 @@ if(Qt6_FOUND)
         src/gui/mainwindow.cpp
         src/gui/codeeditor.cpp
         src/gui/syntaxhighlighter.cpp
+        src/gui/listingwidget.cpp
         src/gui/registersview.cpp
         src/gui/memoryview.cpp
+        src/gui/stackview.cpp
         src/gui/terminalwidget.cpp
         src/gui/hardwarewidget.cpp
         src/gui/easybinwidget.cpp
@@ -117,8 +119,10 @@ if(Qt6_FOUND)
             src/gui/mainwindow.cpp
             src/gui/codeeditor.cpp
             src/gui/syntaxhighlighter.cpp
+            src/gui/listingwidget.cpp
             src/gui/registersview.cpp
             src/gui/memoryview.cpp
+            src/gui/stackview.cpp
             src/gui/terminalwidget.cpp
             src/gui/hardwarewidget.cpp
             src/gui/easybinwidget.cpp

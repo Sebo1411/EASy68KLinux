@@ -7,6 +7,9 @@
 #include <QColor>
 #include <QPushButton>
 #include <QCheckBox>
+#include <QLineEdit>
+#include <QComboBox>
+#include <QTimer>
 #include <QLabel>
 #include <string>
 
@@ -49,9 +52,19 @@ public:
     QColor  getCanvasPixel(int x, int y) const;
     const QImage& getCanvasImage() const { return canvas; }
 
+    // Interrupt handling
+    void triggerInterrupt(int level);
+    void setAutoInterrupt(int level, int intervalMs, bool enabled);
+    bool isAutoInterruptEnabled() const;
+
+signals:
+    void hardwareResetRequested();
+
 public slots:
     void onClearCanvasClicked();
     void onSaveCanvasClicked();
+    void onMemoryMapChanged();
+    void onAutoIrqChanged();
 
 private slots:
     void onSwitchToggled(int index, bool checked);
@@ -100,6 +113,29 @@ private:
     QCheckBox *switches[8];
     QPushButton *pushButtons[8];
     CanvasView *canvasView;
+
+    // Interrupt & Memory Map widgets
+    QPushButton *irqButtons[7];
+    QComboBox *autoIrqCombo = nullptr;
+    QLineEdit *autoIrqIntervalEdit = nullptr;
+    QCheckBox *autoIrqCheck = nullptr;
+    QTimer *autoIrqTimer = nullptr;
+    QPushButton *hwResetBtn = nullptr;
+    QCheckBox *romMapCheck;
+    QLineEdit *romStartEdit;
+    QLineEdit *romEndEdit;
+
+    QCheckBox *readMapCheck;
+    QLineEdit *readStartEdit;
+    QLineEdit *readEndEdit;
+
+    QCheckBox *protectedMapCheck;
+    QLineEdit *protectedStartEdit;
+    QLineEdit *protectedEndEdit;
+
+    QCheckBox *invalidMapCheck;
+    QLineEdit *invalidStartEdit;
+    QLineEdit *invalidEndEdit;
 
     // Graphics state protected by mutex
     mutable QMutex graphicsMutex;

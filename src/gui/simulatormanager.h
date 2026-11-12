@@ -4,6 +4,7 @@
 #include <QObject>
 #include <QTimer>
 #include <QString>
+#include <QStringList>
 #include <cstdint>
 
 class SimulatorManager : public QObject
@@ -15,18 +16,36 @@ public:
     ~SimulatorManager() override;
 
     bool loadS68(const QString &filePath);
-    void step();
-    void run();
-    void pause();
-    void reset();
+    void loadListingDirectives(const QStringList &lines);
+
+    // Execution modes matching Sim68K
+    void traceInto();                          // F7: Trace into 1 instruction
+    void stepOver();                           // F8: Step over subroutine (BSR / JSR)
+    void step() { traceInto(); }               // Backward compatibility alias
+    void run();                                // F9: Continuous execution
+    void runToCursor(uint32_t targetAddr);     // Ctrl+F9: Run until PC == targetAddr
+    void pause();                              // F6: Pause execution
+    void reset() { reloadProgram(); }          // Backward compatibility alias
+    void rewindProgram();                      // Ctrl+F2: Rewind to initial start PC
+    void reloadProgram();                      // Ctrl+F3: Reload S68 file from disk
+
+    void toggleAutoTrace(int intervalMs = 200);// F10: Auto-trace timer
+    bool isAutoTracing() const;
+    void setAutoTraceInterval(int ms);
+    int getAutoTraceInterval() const { return autoTraceInterval; }
+
+    void clearCycles();
 
     bool isRunning() const { return running; }
     bool isLoaded() const { return programLoaded; }
 
+    // Breakpoints
     void toggleBreakpoint(uint32_t addr);
     bool hasBreakpoint(uint32_t addr) const;
     void clearBreakpoints();
 
+    // Memory & Registers
+    char* getMemory();
     const char* getMemory() const;
     uint32_t getMemorySize() const;
 
@@ -36,6 +55,14 @@ public:
     const long* getD() const;
     const long* getA() const;
 
+    // Register Mutators
+    void setD(int idx, uint32_t val);
+    void setA(int idx, uint32_t val);
+    void setUS(uint32_t val);
+    void setSS(uint32_t val);
+    void setPC(uint32_t val);
+    void setSR(uint16_t val);
+
 signals:
     void stateChanged();
     void simulationHalted(const QString &reason);
@@ -43,12 +70,17 @@ signals:
 
 private slots:
     void executionBatch();
+    void autoTraceTick();
 
 private:
     bool programLoaded = false;
     bool running = false;
+    uint32_t startPC = 0;
     QString currentS68File;
+
     QTimer *runTimer = nullptr;
+    QTimer *autoTraceTimer = nullptr;
+    int autoTraceInterval = 200;
     const int BATCH_SIZE = 5000;
 };
 

@@ -4,8 +4,25 @@
 #include <QWidget>
 #include <QLineEdit>
 #include <QLabel>
-#include <QCheckBox>
+#include <QPushButton>
+#include <QMouseEvent>
 #include <cstdint>
+
+class SimulatorManager;
+
+class RegisterLineEdit : public QLineEdit
+{
+    Q_OBJECT
+
+public:
+    explicit RegisterLineEdit(QWidget *parent = nullptr);
+
+signals:
+    void doubleClicked();
+
+protected:
+    void mouseDoubleClickEvent(QMouseEvent *event) override;
+};
 
 class RegistersView : public QWidget
 {
@@ -14,30 +31,45 @@ class RegistersView : public QWidget
 public:
     explicit RegistersView(QWidget *parent = nullptr);
 
+    void setSimulatorManager(SimulatorManager *sm);
     void updateRegisters(const long *D, const long *A, long pc, short sr, uint64_t cycles);
 
+    // Getters for testing
+    uint32_t getD(int idx) const;
+    uint32_t getA(int idx) const;
+    uint32_t getPC() const;
+    uint16_t getSR() const;
+    uint64_t getCycles() const;
+
 signals:
+    void addressDoubleClicked(uint32_t addr);
+    void pcDoubleClicked(uint32_t pc);
     void registerChanged(const QString &regName, uint32_t val);
 
+private slots:
+    void onDRegisterEdited(int idx);
+    void onARegisterEdited(int idx);
+    void onUSRegisterEdited();
+    void onSSRegisterEdited();
+    void onPCRegisterEdited();
+    void onSRRegisterEdited();
+    void onClearCyclesClicked();
+
 private:
-    QLineEdit *dRegs[8];
-    QLineEdit *aRegs[8];
-    QLineEdit *pcEdit;
-    QLineEdit *srEdit;
-    QLineEdit *uspEdit;
-    QLineEdit *sspEdit;
-    QLabel *cyclesLabel;
-
-    // CCR bit flags
-    QCheckBox *flagT;
-    QCheckBox *flagS;
-    QCheckBox *flagX;
-    QCheckBox *flagN;
-    QCheckBox *flagZ;
-    QCheckBox *flagV;
-    QCheckBox *flagC;
-
     void setupUi();
+
+    SimulatorManager *simManager = nullptr;
+
+    RegisterLineEdit *dRegs[8];
+    RegisterLineEdit *aRegs[8];
+    RegisterLineEdit *pcEdit;
+    RegisterLineEdit *srEdit;
+    RegisterLineEdit *usEdit;
+    RegisterLineEdit *ssEdit;
+    QLineEdit *cyclesEdit;
+    QPushButton *clearCyclesBtn;
+
+    bool updatingUi = false;
 };
 
 #endif // REGISTERSVIEW_H

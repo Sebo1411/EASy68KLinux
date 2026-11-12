@@ -10,8 +10,12 @@
 #include <QMessageBox>
 #include <QFont>
 #include "../simulator/extern.h"
+#include "../simulator/proto.h"
 
 extern int seg7loc, LEDloc, switchLoc, pbLoc;
+extern bool ROMMap, ReadMap, ProtectedMap, InvalidMap;
+extern int ROMStart, ROMEnd, ReadStart, ReadEnd;
+extern int ProtectedStart, ProtectedEnd, InvalidStart, InvalidEnd;
 
 static inline QColor decodeColor(int c) {
     // 68000 TRAP #15 color format is $00BBGGRR
@@ -276,7 +280,131 @@ void HardwareWidget::setupUi()
     periphLayout->addLayout(controlsGrid);
     mainLayout->addWidget(periphBox);
 
-    // 2. 2D Graphics Canvas Box
+    // 2. Interrupt & Memory Map Horizontal Row
+    auto *middleLayout = new QHBoxLayout();
+
+    // Interrupt Box (matching Sim68K Hardware.png)
+    auto *irqBox = new QGroupBox(tr("Interrupts & Reset"), this);
+    auto *irqMainLayout = new QVBoxLayout(irqBox);
+    irqMainLayout->setSpacing(4);
+
+    auto *irqBtnRow = new QHBoxLayout();
+    irqBtnRow->setSpacing(4);
+    for (int i = 0; i < 7; ++i) {
+        int level = i + 1;
+        irqButtons[i] = new QPushButton(QString("IRQ %1").arg(level), irqBox);
+        irqButtons[i]->setStyleSheet("font-weight: bold; background-color: #881337; color: white;");
+        irqBtnRow->addWidget(irqButtons[i]);
+        connect(irqButtons[i], &QPushButton::clicked, this, [this, level]() {
+            triggerInterrupt(level);
+        });
+    }
+    hwResetBtn = new QPushButton(tr("Reset"), irqBox);
+    hwResetBtn->setToolTip(tr("Reset 68000 Processor & Peripherals"));
+    irqBtnRow->addWidget(hwResetBtn);
+    connect(hwResetBtn, &QPushButton::clicked, this, [this]() {
+        resetHardware();
+        emit hardwareResetRequested();
+    });
+    irqMainLayout->addLayout(irqBtnRow);
+
+    auto *autoIrqRow = new QHBoxLayout();
+    autoIrqRow->setSpacing(6);
+    autoIrqCheck = new QCheckBox(tr("Auto Interrupt:"), irqBox);
+    autoIrqCombo = new QComboBox(irqBox);
+    for (int level = 1; level <= 7; ++level) {
+        autoIrqCombo->addItem(QString("IRQ %1").arg(level), level);
+    }
+    autoIrqIntervalEdit = new QLineEdit("1000", irqBox);
+    autoIrqIntervalEdit->setMaximumWidth(65);
+    autoIrqRow->addWidget(autoIrqCheck);
+    autoIrqRow->addWidget(autoIrqCombo);
+    autoIrqRow->addWidget(new QLabel(tr("Every (ms):"), irqBox));
+    autoIrqRow->addWidget(autoIrqIntervalEdit);
+    autoIrqRow->addStretch();
+    irqMainLayout->addLayout(autoIrqRow);
+
+    autoIrqTimer = new QTimer(this);
+    connect(autoIrqTimer, &QTimer::timeout, this, [this]() {
+        int level = autoIrqCombo->currentData().toInt();
+        triggerInterrupt(level);
+    });
+    connect(autoIrqCheck, &QCheckBox::toggled, this, &HardwareWidget::onAutoIrqChanged);
+    connect(autoIrqCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, &HardwareWidget::onAutoIrqChanged);
+    connect(autoIrqIntervalEdit, &QLineEdit::editingFinished, this, &HardwareWidget::onAutoIrqChanged);
+
+    middleLayout->addWidget(irqBox, 1);
+
+    // Memory Map Box
+    auto *mapBox = new QGroupBox(tr("Memory Map"), this);
+    auto *mapGrid = new QGridLayout(mapBox);
+    mapGrid->setSpacing(4);
+    QFont monoFont("Monospace", 8);
+
+    romMapCheck = new QCheckBox(tr("ROM:"), mapBox);
+    romStartEdit = new QLineEdit("000000", mapBox);
+    romStartEdit->setFont(monoFont);
+    romStartEdit->setMaximumWidth(65);
+    romEndEdit = new QLineEdit("001FFF", mapBox);
+    romEndEdit->setFont(monoFont);
+    romEndEdit->setMaximumWidth(65);
+    mapGrid->addWidget(romMapCheck, 0, 0);
+    mapGrid->addWidget(romStartEdit, 0, 1);
+    mapGrid->addWidget(new QLabel("-", mapBox), 0, 2);
+    mapGrid->addWidget(romEndEdit, 0, 3);
+
+    readMapCheck = new QCheckBox(tr("Read Only:"), mapBox);
+    readStartEdit = new QLineEdit("002000", mapBox);
+    readStartEdit->setFont(monoFont);
+    readStartEdit->setMaximumWidth(65);
+    readEndEdit = new QLineEdit("003FFF", mapBox);
+    readEndEdit->setFont(monoFont);
+    readEndEdit->setMaximumWidth(65);
+    mapGrid->addWidget(readMapCheck, 0, 4);
+    mapGrid->addWidget(readStartEdit, 0, 5);
+    mapGrid->addWidget(new QLabel("-", mapBox), 0, 6);
+    mapGrid->addWidget(readEndEdit, 0, 7);
+
+    protectedMapCheck = new QCheckBox(tr("Protected:"), mapBox);
+    protectedStartEdit = new QLineEdit("004000", mapBox);
+    protectedStartEdit->setFont(monoFont);
+    protectedStartEdit->setMaximumWidth(65);
+    protectedEndEdit = new QLineEdit("005FFF", mapBox);
+    protectedEndEdit->setFont(monoFont);
+    protectedEndEdit->setMaximumWidth(65);
+    mapGrid->addWidget(protectedMapCheck, 1, 0);
+    mapGrid->addWidget(protectedStartEdit, 1, 1);
+    mapGrid->addWidget(new QLabel("-", mapBox), 1, 2);
+    mapGrid->addWidget(protectedEndEdit, 1, 3);
+
+    invalidMapCheck = new QCheckBox(tr("Invalid:"), mapBox);
+    invalidStartEdit = new QLineEdit("006000", mapBox);
+    invalidStartEdit->setFont(monoFont);
+    invalidStartEdit->setMaximumWidth(65);
+    invalidEndEdit = new QLineEdit("007FFF", mapBox);
+    invalidEndEdit->setFont(monoFont);
+    invalidEndEdit->setMaximumWidth(65);
+    mapGrid->addWidget(invalidMapCheck, 1, 4);
+    mapGrid->addWidget(invalidStartEdit, 1, 5);
+    mapGrid->addWidget(new QLabel("-", mapBox), 1, 6);
+    mapGrid->addWidget(invalidEndEdit, 1, 7);
+
+    auto connectMap = [this](QWidget *w) {
+        if (auto *cb = qobject_cast<QCheckBox*>(w)) {
+            connect(cb, &QCheckBox::toggled, this, &HardwareWidget::onMemoryMapChanged);
+        } else if (auto *le = qobject_cast<QLineEdit*>(w)) {
+            connect(le, &QLineEdit::editingFinished, this, &HardwareWidget::onMemoryMapChanged);
+        }
+    };
+    connectMap(romMapCheck); connectMap(romStartEdit); connectMap(romEndEdit);
+    connectMap(readMapCheck); connectMap(readStartEdit); connectMap(readEndEdit);
+    connectMap(protectedMapCheck); connectMap(protectedStartEdit); connectMap(protectedEndEdit);
+    connectMap(invalidMapCheck); connectMap(invalidStartEdit); connectMap(invalidEndEdit);
+
+    middleLayout->addWidget(mapBox, 2);
+    mainLayout->addLayout(middleLayout);
+
+    // 3. 2D Graphics Canvas Box
     auto *gfxBox = new QGroupBox(tr("2D Graphics Canvas (TRAP #15 Tasks 80..96)"), this);
     auto *gfxLayout = new QVBoxLayout(gfxBox);
 
@@ -302,6 +430,71 @@ void HardwareWidget::setupUi()
     gfxLayout->addWidget(scrollArea);
 
     mainLayout->addWidget(gfxBox);
+}
+
+void HardwareWidget::triggerInterrupt(int level)
+{
+    if (level >= 1 && level <= 7) {
+        irq |= (1 << (level - 1));
+        if (stopInstruction) {
+            irqHandler();
+        }
+    }
+}
+
+void HardwareWidget::setAutoInterrupt(int level, int intervalMs, bool enabled)
+{
+    if (level >= 1 && level <= 7 && autoIrqCombo) {
+        autoIrqCombo->setCurrentIndex(level - 1);
+    }
+    if (intervalMs > 0 && autoIrqIntervalEdit) {
+        autoIrqIntervalEdit->setText(QString::number(intervalMs));
+    }
+    if (autoIrqCheck) {
+        autoIrqCheck->setChecked(enabled);
+    }
+    onAutoIrqChanged();
+}
+
+bool HardwareWidget::isAutoInterruptEnabled() const
+{
+    return autoIrqTimer && autoIrqTimer->isActive();
+}
+
+void HardwareWidget::onAutoIrqChanged()
+{
+    if (!autoIrqTimer || !autoIrqCheck || !autoIrqIntervalEdit) return;
+    if (autoIrqCheck->isChecked()) {
+        bool ok = false;
+        int ms = autoIrqIntervalEdit->text().trimmed().toInt(&ok);
+        if (!ok || ms < 5) ms = 50;
+        autoIrqTimer->setInterval(ms);
+        if (!autoIrqTimer->isActive()) {
+            autoIrqTimer->start();
+        }
+    } else {
+        autoIrqTimer->stop();
+    }
+}
+
+void HardwareWidget::onMemoryMapChanged()
+{
+    bool ok = false;
+    ROMMap = romMapCheck->isChecked();
+    ROMStart = romStartEdit->text().trimmed().toInt(&ok, 16);
+    ROMEnd = romEndEdit->text().trimmed().toInt(&ok, 16);
+
+    ReadMap = readMapCheck->isChecked();
+    ReadStart = readStartEdit->text().trimmed().toInt(&ok, 16);
+    ReadEnd = readEndEdit->text().trimmed().toInt(&ok, 16);
+
+    ProtectedMap = protectedMapCheck->isChecked();
+    ProtectedStart = protectedStartEdit->text().trimmed().toInt(&ok, 16);
+    ProtectedEnd = protectedEndEdit->text().trimmed().toInt(&ok, 16);
+
+    InvalidMap = invalidMapCheck->isChecked();
+    InvalidStart = invalidStartEdit->text().trimmed().toInt(&ok, 16);
+    InvalidEnd = invalidEndEdit->text().trimmed().toInt(&ok, 16);
 }
 
 void HardwareWidget::resetHardware()

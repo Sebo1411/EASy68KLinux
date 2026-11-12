@@ -11,3 +11,15 @@ _CPack_Packages/
 !examples/*.x68
 !tests/*.x68
 !tests/inc_data.bin
+
+# Semantic Data Router & Local Agent Artifacts
+handoff.md
+docs/adr/
+invariants.yaml
+roadmap.json
+inventory.csv
+.agents/
+.opencode/
+.claude/
+.gemini/
+

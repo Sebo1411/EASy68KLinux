@@ -10,8 +10,10 @@
 
 class CodeEditor;
 class SyntaxHighlighter;
+class ListingWidget;
 class RegistersView;
 class MemoryView;
+class StackView;
 class TerminalWidget;
 class SimulatorManager;
 class HardwareWidget;
@@ -27,6 +29,11 @@ public:
     explicit MainWindow(QWidget *parent = nullptr);
     ~MainWindow() override;
 
+    ListingWidget* getListingWidget() const { return listingWidget; }
+    QPlainTextEdit* getExecutionLogView() const { return executionLogView; }
+    RegistersView* getRegistersView() const { return registersView; }
+    MemoryView* getMemoryView() const { return memoryView; }
+    StackView* getStackView() const { return stackView; }
     HardwareWidget* getHardwareWidget() const { return hardwareWidget; }
     EasyBinWidget* getEasyBinWidget() const { return easyBinWidget; }
     HelpWidget* getHelpWidget() const { return helpWidget; }
@@ -34,7 +41,7 @@ public:
     SimulatorManager* getSimulatorManager() const { return simManager; }
     Updater* getUpdater() const { return updater; }
 
-private slots:
+public slots:
     void newFile();
     void openFile();
     bool saveFile();
@@ -43,14 +50,26 @@ private slots:
     void onAssemblerFinished(int exitCode, QProcess::ExitStatus exitStatus);
     void onBuildErrorClicked(QListWidgetItem *item);
 
-    void onSimulatorStep();
+    // Sim68K Execution Actions
+    void onSimulatorTraceInto();
+    void onSimulatorStepOver();
+    void onSimulatorStep() { onSimulatorTraceInto(); }
     void onSimulatorRun();
+    void onSimulatorRunToCursor();
+    void onSimulatorAutoTrace();
     void onSimulatorPause();
     void onSimulatorReset();
+    void onSimulatorRewind();
+    void onSimulatorReload();
     void onSimulatorLoadS68();
     void onSimulatorStateChanged();
     void onSimulatorHalted(const QString &reason);
     void onSimulatorMessage(const QString &msg);
+    void onGoToPC();
+    void onFindText();
+    void onCommentLines();
+    void onUncommentLines();
+    void onInsertTemplate();
 
     void about();
 
@@ -59,10 +78,11 @@ private:
     void createActions();
     void createMenus();
     void createToolBars();
-    void updateDisassemblyView();
+    void showAssemblerStatusDialog(int errors, int warnings);
     bool maybeSave();
     void loadFile(const QString &fileName);
     void setCurrentFile(const QString &fileName);
+    void loadListing(const QString &listingPath);
 
     // Widgets
     QTabWidget *mainTabs;
@@ -71,12 +91,15 @@ private:
     QListWidget *buildOutputList;
 
     RegistersView *registersView;
+    ListingWidget *listingWidget;
+    QPlainTextEdit *executionLogView;
+    QTabWidget *simRightTabs;
     MemoryView *memoryView;
+    StackView *stackView;
     HardwareWidget *hardwareWidget;
     TerminalWidget *terminalWidget;
     EasyBinWidget *easyBinWidget;
     HelpWidget *helpWidget;
-    QPlainTextEdit *disassemblyView;
 
     SimulatorManager *simManager;
     Updater *updater = nullptr;
@@ -88,8 +111,6 @@ private:
     QStringList listingLines;
     bool pendingAutoLoad = false;
 
-    void loadListing(const QString &listingPath);
-
     // Actions
     QAction *newAct;
     QAction *openAct;
@@ -97,17 +118,45 @@ private:
     QAction *saveAsAct;
     QAction *exitAct;
 
+    QAction *undoAct;
+    QAction *redoAct;
+    QAction *cutAct;
+    QAction *copyAct;
+    QAction *pasteAct;
+    QAction *commentAct;
+    QAction *uncommentAct;
+    QAction *insertTemplateAct;
+
     QAction *assembleAct;
     QAction *assembleAndLoadAct;
 
-    QAction *stepAct;
+    // Sim68K Run Actions
     QAction *runAct;
+    QAction *runToCursorAct;
+    QAction *autoTraceAct;
+    QAction *stepOverAct;
+    QAction *traceIntoAct;
     QAction *pauseAct;
+    QAction *rewindAct;
+    QAction *reloadAct;
     QAction *resetAct;
     QAction *loadS68Act;
     QAction *toggleBpAct;
     QAction *clearBpsAct;
 
+    // Search Actions
+    QAction *findAct;
+    QAction *goToPcAct;
+
+    // View Actions
+    QAction *viewOutputAct;
+    QAction *viewHwAct;
+    QAction *viewMemoryAct;
+    QAction *viewStackAct;
+    QAction *viewEasyBinAct;
+    QAction *viewHelpAct;
+
+    // Help & Updates Actions
     QAction *aboutAct;
     QAction *helpDocAct;
     QAction *helpHwAct;

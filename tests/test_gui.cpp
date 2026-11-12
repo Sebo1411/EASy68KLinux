@@ -5,13 +5,16 @@
 #include <QSignalSpy>
 #include <QFileInfo>
 #include <QFile>
+#include <QScrollBar>
 #include <iostream>
 #include <cstdlib>
 #include "../src/gui/mainwindow.h"
 #include "../src/gui/simulatormanager.h"
 #include "../src/gui/codeeditor.h"
+#include "../src/gui/listingwidget.h"
 #include "../src/gui/registersview.h"
 #include "../src/gui/memoryview.h"
+#include "../src/gui/stackview.h"
 #include "../src/gui/terminalwidget.h"
 #include "../src/gui/hardwarewidget.h"
 #include "../src/gui/easybinwidget.h"
@@ -28,6 +31,7 @@
     } while (0)
 
 extern int seg7loc, LEDloc, switchLoc, pbLoc;
+extern int irq;
 extern char *memory;
 
 int main(int argc, char *argv[])
@@ -43,8 +47,9 @@ int main(int argc, char *argv[])
     QString appDir = QCoreApplication::applicationDirPath();
     QString asmBin = appDir + "/easy68k-asm";
     QString testS68 = appDir + "/gui_hello_test.s68";
-    int asmRc = QProcess::execute(asmBin, {"examples/hello.x68", "-o", testS68});
-    TEST_CHECK(asmRc == 0 && QFileInfo::exists(testS68));
+    QString testL68 = appDir + "/gui_hello_test.l68";
+    int asmRc = QProcess::execute(asmBin, {"examples/hello.x68", "-o", testS68, "--listing", testL68});
+    TEST_CHECK(asmRc == 0 && QFileInfo::exists(testS68) && QFileInfo::exists(testL68));
 
     std::cout << "[GUI TEST] Testing SimulatorManager directly...\n";
     SimulatorManager sim;
@@ -57,9 +62,9 @@ int main(int argc, char *argv[])
     std::cout << "[GUI TEST] Initial PC: 0x" << std::hex << sim.getPC() << std::dec << "\n";
     TEST_CHECK(sim.getPC() == 0x1000);
 
-    // Test stepping
+    // Test stepping & traceInto
     std::cout << "[GUI TEST] Stepping instruction...\n";
-    sim.step();
+    sim.traceInto();
     std::cout << "[GUI TEST] After step 1: PC = 0x" << std::hex << sim.getPC() << std::dec
               << ", Cycles = " << sim.getCycles() << "\n";
     TEST_CHECK(sim.getPC() == 0x1006);
@@ -86,6 +91,24 @@ int main(int argc, char *argv[])
     sim.clearBreakpoints();
     TEST_CHECK(!sim.hasBreakpoint(0x100C));
 
+    // Test Execution Modes: Auto-trace, Rewind, Register Setters, Clear Cycles
+    std::cout << "[GUI TEST] Testing SimulatorManager Execution Modes...\n";
+    sim.toggleAutoTrace(40);
+    TEST_CHECK(sim.isAutoTracing() == true);
+    sim.toggleAutoTrace();
+    TEST_CHECK(sim.isAutoTracing() == false);
+
+    sim.setD(4, 0xCAFEBABE);
+    TEST_CHECK(static_cast<uint32_t>(sim.getD()[4]) == 0xCAFEBABE);
+    sim.setA(3, 0x00008800);
+    TEST_CHECK(static_cast<uint32_t>(sim.getA()[3]) == 0x00008800);
+    sim.setPC(0x00001000);
+    TEST_CHECK(sim.getPC() == 0x1000);
+
+    TEST_CHECK(sim.getCycles() > 0);
+    sim.clearCycles();
+    TEST_CHECK(sim.getCycles() == 0);
+
     // Test TerminalWidget TRAP #15 text output
     std::cout << "[GUI TEST] Testing TerminalWidget I/O...\n";
     TerminalWidget term;
@@ -93,20 +116,135 @@ int main(int argc, char *argv[])
     QTest::qWait(50);
     TEST_CHECK(term.toPlainText().contains("Hello from GUI test!"));
 
-    // Test MemoryView rendering
-    std::cout << "[GUI TEST] Testing MemoryView...\n";
+    // -------------------------------------------------------------------------
+    // Grounded Test 1: ListingWidget No-Snapping Viewport Highlighting
+    // -------------------------------------------------------------------------
+    std::cout << "[GUI TEST] Testing ListingWidget and no-snapping highlight...\n";
+    ListingWidget listWidget;
+    listWidget.setSimulatorManager(&sim);
+
+    QFile l68File(testL68);
+    TEST_CHECK(l68File.open(QFile::ReadOnly | QFile::Text));
+    QStringList l68Lines;
+    QTextStream l68In(&l68File);
+    while (!l68In.atEnd()) {
+        l68Lines.append(l68In.readLine());
+    }
+    listWidget.loadListing(l68Lines);
+    TEST_CHECK(listWidget.scrollArea()->getLineCount() > 0);
+
+    listWidget.resize(700, 500);
+    listWidget.show();
+    QTest::qWait(20);
+
+    // Initial highlight at PC=0x1000
+    listWidget.highlightPC(0x1000, false);
+    int initialScroll = listWidget.scrollArea()->verticalScrollBar()->value();
+    int hl0 = listWidget.scrollArea()->getHighlightedLine();
+    TEST_CHECK(hl0 >= 0);
+
+    // Step to next instruction (0x1006)
+    sim.traceInto();
+    TEST_CHECK(sim.getPC() == 0x1006);
+    listWidget.highlightPC(static_cast<uint32_t>(sim.getPC()), false);
+    int hl1 = listWidget.scrollArea()->getHighlightedLine();
+    TEST_CHECK(hl1 > hl0);
+
+    // Grounded assertion: Viewport scroll did NOT snap or change!
+    int scrollAfterStep1 = listWidget.scrollArea()->verticalScrollBar()->value();
+    TEST_CHECK(scrollAfterStep1 == initialScroll);
+
+    // Step again (0x100A)
+    sim.traceInto();
+    TEST_CHECK(sim.getPC() == 0x100A);
+    listWidget.highlightPC(static_cast<uint32_t>(sim.getPC()), false);
+    int scrollAfterStep2 = listWidget.scrollArea()->verticalScrollBar()->value();
+    TEST_CHECK(scrollAfterStep2 == initialScroll); // Zero snapping!
+
+    // -------------------------------------------------------------------------
+    // Grounded Test 2: MemoryView Interactive Editing, Fill & Copy
+    // -------------------------------------------------------------------------
+    std::cout << "[GUI TEST] Testing MemoryView (Fill, Copy, and Interactive In-Place Edit)...\n";
     MemoryView memView;
     memView.setMemoryPointer(sim.getMemory(), sim.getMemorySize());
     memView.setBaseAddress(0x1000);
-    QTest::qWait(50);
+    QTest::qWait(20);
 
-    // Test RegistersView
+    // Test Fill
+    bool fillOk = memView.fillMemory(0x2000, 0x2007, 0xAABB, 2);
+    TEST_CHECK(fillOk);
+    TEST_CHECK(static_cast<uint8_t>(sim.getMemory()[0x2000]) == 0xAA);
+    TEST_CHECK(static_cast<uint8_t>(sim.getMemory()[0x2001]) == 0xBB);
+    TEST_CHECK(static_cast<uint8_t>(sim.getMemory()[0x2002]) == 0xAA);
+    TEST_CHECK(static_cast<uint8_t>(sim.getMemory()[0x2003]) == 0xBB);
+
+    // Test Copy
+    bool copyOk = memView.copyMemory(0x2000, 0x2500, 8);
+    TEST_CHECK(copyOk);
+    TEST_CHECK(static_cast<uint8_t>(sim.getMemory()[0x2500]) == 0xAA);
+    TEST_CHECK(static_cast<uint8_t>(sim.getMemory()[0x2501]) == 0xBB);
+
+    // Test Save Memory Range
+    QString tmpMemSave = appDir + "/gui_test_mem_range.bin";
+    TEST_CHECK(memView.saveMemoryRange(0x2500, 0x2503, tmpMemSave) == true);
+    QFile savedMemFile(tmpMemSave);
+    TEST_CHECK(savedMemFile.open(QIODevice::ReadOnly));
+    QByteArray savedBytes = savedMemFile.readAll();
+    savedMemFile.close();
+    QFile::remove(tmpMemSave);
+    TEST_CHECK(savedBytes.size() == 4);
+    TEST_CHECK(static_cast<uint8_t>(savedBytes[0]) == 0xAA);
+    TEST_CHECK(static_cast<uint8_t>(savedBytes[1]) == 0xBB);
+
+    // Test In-Place Interactive Nybble Edit
+    QSignalSpy memSpy(&memView, &MemoryView::memoryModified);
+    memView.gridArea()->setCursorPosition(0, 10); // Row 0, High nybble of 0x1000
+    bool keyHandled1 = memView.gridArea()->handleKeyEdit(Qt::Key_5, '5');
+    TEST_CHECK(keyHandled1);
+    TEST_CHECK((static_cast<uint8_t>(sim.getMemory()[0x1000]) & 0xF0) == 0x50);
+    TEST_CHECK(memSpy.count() >= 1);
+
+    // Low nybble: cursor automatically advanced to col 11
+    TEST_CHECK(memView.gridArea()->getCursorCol() == 11);
+    bool keyHandled2 = memView.gridArea()->handleKeyEdit(Qt::Key_C, 'C');
+    TEST_CHECK(keyHandled2);
+    TEST_CHECK(static_cast<uint8_t>(sim.getMemory()[0x1000]) == 0x5C);
+
+    // Test In-Place Interactive ASCII Edit
+    memView.gridArea()->setCursorPosition(0, 58); // Row 0, first ASCII character
+    bool keyHandledAscii = memView.gridArea()->handleKeyEdit(Qt::Key_M, 'M');
+    TEST_CHECK(keyHandledAscii);
+    TEST_CHECK(sim.getMemory()[0x1000] == 'M');
+
+    // -------------------------------------------------------------------------
+    // Grounded Test 3: RegistersView Editing and Mutators
+    // -------------------------------------------------------------------------
     std::cout << "[GUI TEST] Testing RegistersView...\n";
     RegistersView regView;
+    regView.setSimulatorManager(&sim);
+    sim.setD(1, 0x11223344);
+    sim.setA(4, 0x00FF8800);
+    sim.setPC(0x00001006);
+    sim.setSR(0x2700);
     regView.updateRegisters(sim.getD(), sim.getA(), sim.getPC(), sim.getSR(), sim.getCycles());
-    QTest::qWait(50);
+    TEST_CHECK(regView.getD(1) == 0x11223344);
+    TEST_CHECK(regView.getA(4) == 0x00FF8800);
+    TEST_CHECK(regView.getPC() == 0x1006);
+    TEST_CHECK(regView.getSR() == 0x2700);
 
-    // Test HardwareWidget: 7-segment, LEDs, Switches, Pushbuttons
+    // -------------------------------------------------------------------------
+    // Grounded Test 4: StackView
+    // -------------------------------------------------------------------------
+    std::cout << "[GUI TEST] Testing StackView...\n";
+    StackView stackView;
+    stackView.setSimulatorManager(&sim);
+    stackView.updateView();
+    TEST_CHECK(stackView.displayArea() != nullptr);
+    uint32_t midBefore = stackView.displayArea()->getMidAddress();
+    stackView.displayArea()->scrollByBytes(4);
+    TEST_CHECK(stackView.displayArea()->getMidAddress() == ((midBefore + 4) & 0x00FFFFFF));
+
+    // Test HardwareWidget: 7-segment, LEDs, Switches, Pushbuttons, IRQ, Memory Map
     std::cout << "[GUI TEST] Testing HardwareWidget peripherals...\n";
     HardwareWidget hw;
     TEST_CHECK(memory != nullptr);
@@ -126,7 +264,11 @@ int main(int argc, char *argv[])
     // 3. Test Pushbuttons default (normally high: 0xFF)
     TEST_CHECK(hw.getPushbuttonValue() == 0xFF);
 
-    // 4. Test 2D Graphics Canvas via TerminalWidget forwarding
+    // 4. Test Interrupt Trigger
+    hw.triggerInterrupt(3);
+    TEST_CHECK((irq & (1 << 2)) != 0);
+
+    // 5. Test 2D Graphics Canvas via TerminalWidget forwarding
     std::cout << "[GUI TEST] Testing 2D Graphics Canvas API...\n";
     term.setHardwareWidget(&hw);
 
@@ -172,8 +314,9 @@ int main(int argc, char *argv[])
     help.loadPage("main.htm");
     help.loadPage("SIMHELP/Hardware.htm");
 
-    // Clean up temporary s68 file
+    // Clean up temporary s68 and l68 files
     QFile::remove(testS68);
+    QFile::remove(testL68);
 
     // Test native Auto-Updater
     std::cout << "[GUI TEST] Testing native Auto-Updater...\n";
@@ -299,6 +442,6 @@ int main(int argc, char *argv[])
     Updater::setAutoCheckOnStartup(origSetting);
     TEST_CHECK(Updater::autoCheckOnStartup() == origSetting);
 
-    std::cout << "[GUI TEST] ALL TESTS (CORE, HARDWARE, GRAPHICS, EASYBIN, HELP, UPDATER) PASSED!\n";
+    std::cout << "[GUI TEST] ALL TESTS (CORE, HARDWARE, GRAPHICS, EASYBIN, HELP, UPDATER, LISTING, MEMORY, STACK) PASSED!\n";
     return 0;
 }

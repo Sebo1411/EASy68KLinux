@@ -460,10 +460,10 @@ int mem_req (int loc, long size, long *result)
     // Check for access to areas of memory defined in the Memory Map of the
     // hardware window.
     if(InvalidMap) {      // bus error on access
-      if(loc >= InvalidStart && loc <= InvalidEnd){ // if Invalid memory area
+      if(loc + bytes - 1 >= InvalidStart && loc <= InvalidEnd){ // if Invalid memory area
         if (exceptions) {
           mem_req (0x8, LONG_MASK, &PC);        // get bus error vector
-          exceptionHandler (0, (long) loc, WRITE);
+          exceptionHandler (0, (long) loc, READ);
         }else{
           haltSimulator();
           simMessage("Bus Error: Instruction at %04lX accessing address %04lX", (long)OLD_PC, (long)loc);
@@ -473,11 +473,11 @@ int mem_req (int loc, long size, long *result)
     }
 
     if(ProtectedMap) {    // bus error if not supervisor mode
-      if(loc >= ProtectedStart && loc <= ProtectedEnd){ // if Protected memory area
+      if(loc + bytes - 1 >= ProtectedStart && loc <= ProtectedEnd){ // if Protected memory area
         if (!(SR & sbit)){    // if not Supervisor mode
           if (exceptions) {
             mem_req (0x8, LONG_MASK, &PC);        // get bus error vector
-            exceptionHandler (0, (long) loc, WRITE);
+            exceptionHandler (0, (long) loc, READ);
           }else{
             haltSimulator();
             simMessage("Bus Error: Instruction at %04lX accessing address %04lX", (long)OLD_PC, (long)loc);

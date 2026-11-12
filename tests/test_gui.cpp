@@ -18,11 +18,14 @@
 #include "../src/gui/stackview.h"
 #include "../src/gui/terminalwidget.h"
 #include "../src/gui/hardwarewidget.h"
+#include "../src/gui/variablesview.h"
 #include "../src/gui/easybinwidget.h"
 #include "../src/gui/helpwidget.h"
 #include "../src/gui/updater.h"
+#include "../src/simulator/disassembler.h"
 #include "../src/simulator/proto.h"
 #include <QCryptographicHash>
+#include <QScrollArea>
 
 #define TEST_CHECK(cond) \
     do { \
@@ -322,6 +325,282 @@ static int testUpdaterFsmLifecycleTransitions()
     TEST_CHECK(updater.transitionTo(UpdaterState::ApplyingUpdate));
     TEST_CHECK(updater.transitionTo(UpdaterState::Idle));
     TEST_CHECK(updater.state() == UpdaterState::Idle);
+
+    return 0;
+}
+
+static int testDisassemblerInstructionDecodingAndSelfModifyingListing()
+{
+    std::cout << "[GUI TEST] Running testDisassemblerInstructionDecodingAndSelfModifyingListing...\n";
+
+    // 1. Test MOVE.W $3100, D0
+    {
+        uint8_t code[] = {0x30, 0x38, 0x31, 0x00};
+        int bytesConsumed = 0;
+        std::string s = disassemble68k(code, sizeof(code), 0, &bytesConsumed);
+        TEST_CHECK(bytesConsumed == 4);
+        TEST_CHECK(s == "MOVE.W $3100, D0");
+    }
+
+    // 2. Test LSL.W #1, D0
+    {
+        uint8_t code[] = {0xE3, 0x48};
+        int bytesConsumed = 0;
+        std::string s = disassemble68k(code, sizeof(code), 0, &bytesConsumed);
+        TEST_CHECK(bytesConsumed == 2);
+        TEST_CHECK(s == "LSL.W #1, D0");
+    }
+
+    // 3. Test LSL.W #2, D0
+    {
+        uint8_t code[] = {0xE5, 0x48};
+        int bytesConsumed = 0;
+        std::string s = disassemble68k(code, sizeof(code), 0, &bytesConsumed);
+        TEST_CHECK(bytesConsumed == 2);
+        TEST_CHECK(s == "LSL.W #2, D0");
+    }
+
+    // 4. Test ORI.B #$00, D0
+    {
+        uint8_t code[] = {0x00, 0x00, 0x00, 0x00};
+        int bytesConsumed = 0;
+        std::string s = disassemble68k(code, sizeof(code), 0, &bytesConsumed);
+        TEST_CHECK(bytesConsumed == 4);
+        TEST_CHECK(s == "ORI.B #$00, D0");
+    }
+
+    // 5. Test ADDQ.W #4, D1
+    {
+        uint8_t code[] = {0x58, 0x41};
+        int bytesConsumed = 0;
+        std::string s = disassemble68k(code, sizeof(code), 0, &bytesConsumed);
+        TEST_CHECK(bytesConsumed == 2);
+        TEST_CHECK(s == "ADDQ.W #4, D1");
+    }
+
+    // 6. Test BNE $3020 (at PC=0x3000, displacement = 0x1E)
+    {
+        uint8_t mem[0x4000] = {0};
+        mem[0x3000] = 0x66;
+        mem[0x3001] = 0x1E;
+        int bytesConsumed = 0;
+        std::string s = disassemble68k(mem, sizeof(mem), 0x3000, &bytesConsumed);
+        TEST_CHECK(bytesConsumed == 2);
+        TEST_CHECK(s == "BNE $3020");
+    }
+
+    // 7. Test JSR ($1234).W
+    {
+        uint8_t code[] = {0x4E, 0xB8, 0x12, 0x34};
+        int bytesConsumed = 0;
+        std::string s = disassemble68k(code, sizeof(code), 0, &bytesConsumed);
+        TEST_CHECK(bytesConsumed == 4);
+        TEST_CHECK(s == "JSR ($1234).W");
+    }
+
+    // 8. Test TRAP #15
+    {
+        uint8_t code[] = {0x4E, 0x4F};
+        int bytesConsumed = 0;
+        std::string s = disassemble68k(code, sizeof(code), 0, &bytesConsumed);
+        TEST_CHECK(bytesConsumed == 2);
+        TEST_CHECK(s == "TRAP #15");
+    }
+
+    // 9. Test SIMHALT
+    {
+        uint8_t code[] = {0xFF, 0xFF, 0xFF, 0xFF};
+        int bytesConsumed = 0;
+        std::string s = disassemble68k(code, sizeof(code), 0, &bytesConsumed);
+        TEST_CHECK(bytesConsumed == 4);
+        TEST_CHECK(s == "SIMHALT");
+    }
+
+    // 10. Self-modifying listing detection verification
+    SimulatorManager sim;
+    ListingWidget lw;
+    lw.setSimulatorManager(&sim);
+    QStringList lines;
+    lines << "00001000  E348                       10      LSL.W #1, D0";
+    lw.loadListing(lines);
+    lw.resize(600, 300);
+    lw.show();
+
+    // Modify opcode in simulator memory from E348 to E548
+    unsigned char *mem = reinterpret_cast<unsigned char*>(sim.getMemory());
+    if (mem) {
+        mem[0x1000] = 0xE5;
+        mem[0x1001] = 0x48;
+    }
+    lw.highlightPC(0x1000, false);
+    QTest::qWait(20);
+
+    return 0;
+}
+
+static int testCodeEditorLineNumberGutterPadding()
+{
+    std::cout << "[GUI TEST] Running testCodeEditorLineNumberGutterPadding...\n";
+    CodeEditor editor;
+
+    // Minimum 3-digit column width check
+    int w3 = editor.lineNumberAreaWidth();
+    int charW = editor.fontMetrics().horizontalAdvance(QLatin1Char('9'));
+    TEST_CHECK(w3 >= 24 + 3 * charW);
+
+    // Expand to 1500 lines (> 999) -> 4 digits
+    QStringList lines;
+    for (int i = 0; i < 1500; ++i) {
+        lines.append(QString("MOVE.W D%1, D%2").arg(i % 8).arg((i + 1) % 8));
+    }
+    editor.setPlainText(lines.join("\n"));
+
+    int w4 = editor.lineNumberAreaWidth();
+    TEST_CHECK(w4 >= 24 + 4 * charW);
+    TEST_CHECK(w4 > w3);
+
+    return 0;
+}
+
+static int testHardwareWidgetLayoutAndControlsGeometry()
+{
+    std::cout << "[GUI TEST] Running testHardwareWidgetLayoutAndControlsGeometry...\n";
+    HardwareWidget hw;
+    hw.resize(800, 600);
+    hw.show();
+    QTest::qWait(20);
+
+    QWidget *seg7 = hw.getSevenSegmentWidget();
+    TEST_CHECK(seg7 != nullptr);
+    TEST_CHECK(seg7->height() >= 90);
+
+    QWidget *leds = hw.getLedBankWidget();
+    TEST_CHECK(leds != nullptr);
+    TEST_CHECK(leds->height() >= 54);
+
+    auto *scrollArea = hw.findChild<QScrollArea*>();
+    TEST_CHECK(scrollArea != nullptr);
+
+    return 0;
+}
+
+static int testAssemblerErrorAndWarningReportingAndColumnOneHint()
+{
+    std::cout << "[GUI TEST] Running testAssemblerErrorAndWarningReportingAndColumnOneHint...\n";
+    QString appDir = QCoreApplication::applicationDirPath();
+    QString asmBin = appDir + "/easy68k-asm";
+
+    // 1. Column-1 mnemonic / directive produces Invalid opcode with helpful hint
+    QString col1File = appDir + "/test_col1_hint.x68";
+    QFile f1(col1File);
+    TEST_CHECK(f1.open(QIODevice::WriteOnly | QIODevice::Text));
+    f1.write("* Test column-1 directive\nEND START\n");
+    f1.close();
+
+    QProcess proc1;
+    proc1.start(asmBin, {col1File, "-o", appDir + "/test_col1_hint.s68", "--listing", appDir + "/test_col1_hint.l68"});
+    TEST_CHECK(proc1.waitForFinished(5000));
+    TEST_CHECK(proc1.exitCode() != 0);
+
+    QString errOut1 = QString::fromUtf8(proc1.readAllStandardError());
+    TEST_CHECK(errOut1.contains("ERROR: Invalid opcode"));
+    TEST_CHECK(errOut1.contains("column 1"));
+    TEST_CHECK(errOut1.contains("'END'"));
+    QFile::remove(col1File);
+    QFile::remove(appDir + "/test_col1_hint.s68");
+    QFile::remove(appDir + "/test_col1_hint.l68");
+
+    // 2. Default WARflag produces warning on missing END directive
+    QString warnFile = appDir + "/test_missing_end.x68";
+    QFile f2(warnFile);
+    TEST_CHECK(f2.open(QIODevice::WriteOnly | QIODevice::Text));
+    f2.write("    ORG $1000\nSTART:\n    NOP\n");
+    f2.close();
+
+    QProcess proc2;
+    proc2.start(asmBin, {warnFile, "-o", appDir + "/test_missing_end.s68", "--listing", appDir + "/test_missing_end.l68"});
+    TEST_CHECK(proc2.waitForFinished(5000));
+    QString errOut2 = QString::fromUtf8(proc2.readAllStandardError());
+    TEST_CHECK(errOut2.contains("WARNING:"));
+    QFile::remove(warnFile);
+    QFile::remove(appDir + "/test_missing_end.s68");
+    QFile::remove(appDir + "/test_missing_end.l68");
+
+    return 0;
+}
+
+static int testMemoryViewSymbolResolution()
+{
+    std::cout << "[GUI TEST] Running testMemoryViewSymbolResolution...\n";
+    MemoryView mv;
+    QMap<QString, uint32_t> syms;
+    syms["START"] = 0x00001000;
+    syms["VAR1"] = 0x00004000;
+    syms["DATA_SEC"] = 0x00005000;
+    mv.setSymbolTable(syms);
+
+    uint32_t resolved = 0;
+    TEST_CHECK(mv.resolveAddressExpression("VAR1", resolved) && resolved == 0x00004000);
+    TEST_CHECK(mv.resolveAddressExpression("start", resolved) && resolved == 0x00001000);
+    TEST_CHECK(mv.resolveAddressExpression("START+4", resolved) && resolved == 0x00001004);
+    TEST_CHECK(mv.resolveAddressExpression("DATA_SEC+$20", resolved) && resolved == 0x00005020);
+    TEST_CHECK(mv.resolveAddressExpression("VAR1-4", resolved) && resolved == 0x00003FFC);
+    TEST_CHECK(mv.resolveAddressExpression("$4000", resolved) && resolved == 0x00004000);
+    TEST_CHECK(mv.resolveAddressExpression("0x4000", resolved) && resolved == 0x00004000);
+    TEST_CHECK(mv.resolveAddressExpression("VAR1 ($00004000)", resolved) && resolved == 0x00004000);
+
+    return 0;
+}
+
+static int testVariablesViewAutoDiscoveryPersistentInitialsAndLiveUpdate()
+{
+    std::cout << "[GUI TEST] Running testVariablesViewAutoDiscoveryPersistentInitialsAndLiveUpdate...\n";
+    SimulatorManager sim;
+    MemoryView mv;
+    mv.setMemoryPointer(sim.getMemory(), sim.getMemorySize());
+
+    VariablesView vv;
+    vv.setSimulatorManager(&sim);
+    vv.setMemoryView(&mv);
+
+    // Setup 3 variables
+    QList<VariableEntry> vars;
+    VariableEntry v1; v1.name = "VAR1"; v1.address = 0x4000; v1.byteSize = 2; v1.elementCount = 1;
+    VariableEntry v2; v2.name = "VAR2"; v2.address = 0x4002; v2.byteSize = 1; v2.elementCount = 1;
+    VariableEntry v3; v3.name = "VAR3"; v3.address = 0x4004; v3.byteSize = 4; v3.elementCount = 1;
+    vars << v1 << v2 << v3;
+
+    vv.setDiscoveredVariables(vars);
+    TEST_CHECK(vv.getDiscoveredVariables().size() == 3);
+
+    // Set persistent initial values
+    vv.setPersistentInitialValue("VAR1", "$1234");
+    vv.setPersistentInitialValue("VAR2", "#55");
+    vv.setPersistentInitialValue("VAR3", "%101010");
+
+    TEST_CHECK(vv.getPersistentInitialValue("VAR1") == "$1234");
+    TEST_CHECK(vv.getPersistentInitialValue("VAR2") == "#55");
+    TEST_CHECK(vv.getPersistentInitialValue("VAR3") == "%101010");
+
+    vv.applyPersistentInitialValues();
+
+    // Verify memory in simulator
+    const unsigned char *mem = reinterpret_cast<const unsigned char*>(sim.getMemory());
+    TEST_CHECK(mem != nullptr);
+    TEST_CHECK(mem[0x4000] == 0x12 && mem[0x4001] == 0x34);
+    TEST_CHECK(mem[0x4002] == 55);
+    uint32_t val3 = (static_cast<uint32_t>(mem[0x4004]) << 24) |
+                    (static_cast<uint32_t>(mem[0x4005]) << 16) |
+                    (static_cast<uint32_t>(mem[0x4006]) << 8) |
+                    static_cast<uint32_t>(mem[0x4007]);
+    TEST_CHECK(val3 == 42); // %101010 == 42
+
+    // Test live update
+    vv.updateVariables();
+
+    // Add custom watch expression
+    vv.addWatchExpression("$4000", 2);
+    TEST_CHECK(vv.getDiscoveredVariables().size() == 4);
 
     return 0;
 }
@@ -942,6 +1221,12 @@ int main(int argc, char *argv[])
     TEST_CHECK(testMemoryCursorFsmNavigationAndColumnMapping() == 0);
     TEST_CHECK(testSRecordParserFsmValidAndCorruptedRecords() == 0);
     TEST_CHECK(testUpdaterFsmLifecycleTransitions() == 0);
+    TEST_CHECK(testDisassemblerInstructionDecodingAndSelfModifyingListing() == 0);
+    TEST_CHECK(testCodeEditorLineNumberGutterPadding() == 0);
+    TEST_CHECK(testHardwareWidgetLayoutAndControlsGeometry() == 0);
+    TEST_CHECK(testAssemblerErrorAndWarningReportingAndColumnOneHint() == 0);
+    TEST_CHECK(testMemoryViewSymbolResolution() == 0);
+    TEST_CHECK(testVariablesViewAutoDiscoveryPersistentInitialsAndLiveUpdate() == 0);
 
     std::cout << "[GUI TEST] ALL TESTS (CORE, HARDWARE, GRAPHICS, EASYBIN, HELP, UPDATER, LISTING, MEMORY, STACK) PASSED!\n";
     return 0;

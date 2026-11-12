@@ -10,32 +10,34 @@ CodeEditor::CodeEditor(QWidget *parent) : QPlainTextEdit(parent)
     connect(this, &CodeEditor::updateRequest, this, &CodeEditor::updateLineNumberArea);
     connect(this, &CodeEditor::cursorPositionChanged, this, &CodeEditor::highlightCurrentLine);
 
-    updateLineNumberAreaWidth(0);
-    highlightCurrentLine();
-
     QFont font("Monospace", 10);
     font.setStyleHint(QFont::Monospace);
     setFont(font);
+    document()->setDocumentMargin(6);
     setTabStopDistance(fontMetrics().horizontalAdvance(' ') * 8);
     setStyleSheet("QPlainTextEdit { background-color: #1E1E1E; color: #D4D4D4; selection-background-color: #264F78; selection-color: #FFFFFF; border: 1px solid #333337; }");
+
+    updateLineNumberAreaWidth(0);
+    highlightCurrentLine();
 }
 
 int CodeEditor::lineNumberAreaWidth()
 {
-    int digits = 1;
+    int computedDigits = 1;
     int max = qMax(1, blockCount());
     while (max >= 10) {
         max /= 10;
-        ++digits;
+        ++computedDigits;
     }
+    int digits = qMax(3, computedDigits);
 
-    int space = 12 + fontMetrics().horizontalAdvance(QLatin1Char('9')) * digits;
+    int space = 24 + fontMetrics().horizontalAdvance(QLatin1Char('9')) * digits;
     return space;
 }
 
 void CodeEditor::updateLineNumberAreaWidth(int /* newBlockCount */)
 {
-    setViewportMargins(lineNumberAreaWidth(), 0, 0, 0);
+    setViewportMargins(lineNumberAreaWidth() + 4, 0, 0, 0);
 }
 
 void CodeEditor::updateLineNumberArea(const QRect &rect, int dy)
@@ -92,8 +94,8 @@ void CodeEditor::highlightLine(int lineNumber)
 void CodeEditor::lineNumberAreaPaintEvent(QPaintEvent *event)
 {
     QPainter painter(lineNumberArea);
-    painter.fillRect(event->rect(), QColor(0x1E, 0x1E, 0x1E));
-    painter.setPen(QColor(0x33, 0x33, 0x37));
+    painter.fillRect(event->rect(), QColor(0x25, 0x25, 0x26));
+    painter.setPen(QColor(0x3C, 0x3C, 0x3C));
     painter.drawLine(lineNumberArea->width() - 1, event->rect().top(),
                      lineNumberArea->width() - 1, event->rect().bottom());
 
@@ -107,8 +109,8 @@ void CodeEditor::lineNumberAreaPaintEvent(QPaintEvent *event)
         if (block.isVisible() && bottom >= event->rect().top()) {
             QString number = QString::number(blockNumber + 1);
             painter.setPen(blockNumber == curBlock ? QColor(0xC6, 0xC6, 0xC6) : QColor(0x85, 0x85, 0x85));
-            painter.drawText(0, top, lineNumberArea->width() - 8, fontMetrics().height(),
-                             Qt::AlignRight, number);
+            QRect numRect(6, top, lineNumberArea->width() - 16, fontMetrics().height());
+            painter.drawText(numRect, Qt::AlignRight | Qt::AlignVCenter, number);
         }
 
         block = block.next();

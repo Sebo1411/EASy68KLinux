@@ -19,6 +19,7 @@ class SimulatorManager;
 class HardwareWidget;
 class EasyBinWidget;
 class HelpWidget;
+class VariablesView;
 class Updater;
 
 class MainWindow : public QMainWindow
@@ -36,6 +37,7 @@ public:
     QPlainTextEdit* getExecutionLogView() const { return executionLogView; }
     RegistersView* getRegistersView() const { return registersView; }
     MemoryView* getMemoryView() const { return memoryView; }
+    VariablesView* getVariablesView() const { return variablesView; }
     StackView* getStackView() const { return stackView; }
     HardwareWidget* getHardwareWidget() const { return hardwareWidget; }
     EasyBinWidget* getEasyBinWidget() const { return easyBinWidget; }
@@ -81,7 +83,7 @@ private:
     void createActions();
     void createMenus();
     void createToolBars();
-    void showAssemblerStatusDialog(int errors, int warnings);
+    void showAssemblerStatusDialog(int errors, int warnings, const QStringList &details = {});
     bool maybeSave();
     void loadFile(const QString &fileName);
     void setCurrentFile(const QString &fileName);
@@ -98,6 +100,7 @@ private:
     QPlainTextEdit *executionLogView;
     QTabWidget *simRightTabs;
     MemoryView *memoryView;
+    VariablesView *variablesView;
     StackView *stackView;
     HardwareWidget *hardwareWidget;
     TerminalWidget *terminalWidget;
@@ -155,6 +158,7 @@ private:
     QAction *viewOutputAct;
     QAction *viewHwAct;
     QAction *viewMemoryAct;
+    QAction *viewVariablesAct;
     QAction *viewStackAct;
     QAction *viewEasyBinAct;
     QAction *viewHelpAct;

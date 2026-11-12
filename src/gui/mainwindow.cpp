@@ -4,6 +4,7 @@
 #include "listingwidget.h"
 #include "registersview.h"
 #include "memoryview.h"
+#include "variablesview.h"
 #include "stackview.h"
 #include "hardwarewidget.h"
 #include "easybinwidget.h"
@@ -349,11 +350,20 @@ MainWindow::MainWindow(QWidget *parent)
         simManager->setPC(addr);
     });
 
-    // Memory edits immediately notify hardware and stack views
+    // Memory edits immediately notify hardware, stack, and variables views
     connect(memoryView, &MemoryView::memoryModified, this, [this](uint32_t /* addr */) {
         if (hardwareWidget) hardwareWidget->updateHardware();
         if (stackView) stackView->updateView();
+        if (variablesView) variablesView->updateVariables();
     });
+
+    if (variablesView) {
+        connect(variablesView, &VariablesView::memoryModified, this, [this](uint32_t /* addr */) {
+            if (hardwareWidget) hardwareWidget->updateHardware();
+            if (stackView) stackView->updateView();
+            if (memoryView) memoryView->updateView();
+        });
+    }
 
     connect(hardwareWidget, &HardwareWidget::hardwareResetRequested, this, &MainWindow::onSimulatorReset);
 
@@ -475,6 +485,11 @@ void MainWindow::setupUi()
 
     memoryView = new MemoryView(simRightTabs);
     simRightTabs->addTab(memoryView, tr("Memory"));
+
+    variablesView = new VariablesView(simRightTabs);
+    simRightTabs->addTab(variablesView, tr("Variables & Watch"));
+    variablesView->setSimulatorManager(simManager);
+    variablesView->setMemoryView(memoryView);
 
     stackView = new StackView(simRightTabs);
     simRightTabs->addTab(stackView, tr("Stack"));
@@ -644,6 +659,12 @@ void MainWindow::createActions()
         simRightTabs->setCurrentWidget(memoryView);
     });
 
+    viewVariablesAct = new QAction(tr("&Variables && Watch"), this);
+    connect(viewVariablesAct, &QAction::triggered, this, [this]() {
+        mainTabs->setCurrentIndex(1);
+        simRightTabs->setCurrentWidget(variablesView);
+    });
+
     viewStackAct = new QAction(tr("&Stack"), this);
     connect(viewStackAct, &QAction::triggered, this, [this]() {
         mainTabs->setCurrentIndex(1);
@@ -730,6 +751,7 @@ void MainWindow::createMenus()
     viewMenu->addAction(viewOutputAct);
     viewMenu->addAction(viewHwAct);
     viewMenu->addAction(viewMemoryAct);
+    viewMenu->addAction(viewVariablesAct);
     viewMenu->addAction(viewStackAct);
     viewMenu->addSeparator();
     viewMenu->addAction(viewEasyBinAct);
@@ -939,30 +961,44 @@ void MainWindow::onAssemblerFinished(int exitCode, QProcess::ExitStatus /* exitS
     QString errOutput = QString::fromUtf8(assemblerProcess->readAllStandardError());
     QString fullOutput = output + errOutput;
 
-    int errorCount = (exitCode != 0) ? 1 : 0;
+    int errorCount = 0;
     int warningCount = 0;
+    QStringList diagnosticDetails;
+    int firstErrorLine = -1;
 
     QStringList lines = fullOutput.split('\n', Qt::SkipEmptyParts);
     for (const QString &line : lines) {
         auto *item = new QListWidgetItem(line, buildOutputList);
+        QString trimmedLine = line.trimmed();
 
-        if (line.contains("error", Qt::CaseInsensitive)) {
-            errorCount++;
-            item->setForeground(QColor(220, 38, 38));
-        } else if (line.contains("warning", Qt::CaseInsensitive)) {
-            warningCount++;
-            item->setForeground(QColor(217, 119, 6));
+        bool isSummaryLine = trimmedLine.startsWith("Assembly failed with", Qt::CaseInsensitive) ||
+                             trimmedLine.startsWith("Assembly completed successfully", Qt::CaseInsensitive);
+
+        if (!isSummaryLine) {
+            if (trimmedLine.contains(": ERROR:", Qt::CaseInsensitive) || trimmedLine.contains("ERROR:")) {
+                errorCount++;
+                item->setForeground(QColor(220, 38, 38));
+                diagnosticDetails.append(trimmedLine);
+            } else if (trimmedLine.contains(": WARNING:", Qt::CaseInsensitive) || trimmedLine.contains("WARNING:")) {
+                warningCount++;
+                item->setForeground(QColor(217, 119, 6));
+                diagnosticDetails.append(trimmedLine);
+            }
         }
 
         static QRegularExpression reLine(QStringLiteral("[:\\(](\\d+)[:\\)]"));
-        auto match = reLine.match(line);
+        auto match = reLine.match(trimmedLine);
         if (match.hasMatch()) {
             int lineNum = match.captured(1).toInt();
             item->setData(Qt::UserRole, lineNum);
-            if (errorCount > 0) {
-                item->setForeground(QColor(220, 38, 38));
+            if (firstErrorLine < 0 && trimmedLine.contains("ERROR:", Qt::CaseInsensitive)) {
+                firstErrorLine = lineNum;
             }
         }
+    }
+
+    if (exitCode != 0 && errorCount == 0) {
+        errorCount = 1;
     }
 
     if (exitCode == 0) {
@@ -980,19 +1016,25 @@ void MainWindow::onAssemblerFinished(int exitCode, QProcess::ExitStatus /* exitS
         loadListing(currentListingPath);
 
         if (!pendingAutoLoad) {
-            showAssemblerStatusDialog(0, warningCount);
+            showAssemblerStatusDialog(0, warningCount, diagnosticDetails);
         }
     } else {
         statusBar()->showMessage(tr("Assembly failed! See Build Output."), 4000);
+        if (firstErrorLine > 0 && editor) {
+            editor->highlightLine(firstErrorLine);
+        }
+        if (QFileInfo::exists(currentListingPath)) {
+            loadListing(currentListingPath);
+        }
         if (!pendingAutoLoad) {
-            showAssemblerStatusDialog(std::max(1, errorCount), warningCount);
+            showAssemblerStatusDialog(errorCount, warningCount, diagnosticDetails);
         }
     }
 
     pendingAutoLoad = false;
 }
 
-void MainWindow::showAssemblerStatusDialog(int errors, int warnings)
+void MainWindow::showAssemblerStatusDialog(int errors, int warnings, const QStringList &details)
 {
     if (QGuiApplication::platformName() == QStringLiteral("offscreen")) {
         return;
@@ -1000,7 +1042,7 @@ void MainWindow::showAssemblerStatusDialog(int errors, int warnings)
 
     QDialog dlg(this);
     dlg.setWindowTitle(tr("Assembler Status"));
-    dlg.setMinimumWidth(320);
+    dlg.setMinimumWidth(details.isEmpty() ? 320 : 520);
 
     auto *layout = new QVBoxLayout(&dlg);
     layout->setSpacing(12);
@@ -1016,6 +1058,16 @@ void MainWindow::showAssemblerStatusDialog(int errors, int warnings)
         infoLabel->setStyleSheet("color: #16A34A; font-weight: bold; font-size: 11pt;");
     }
     layout->addWidget(infoLabel);
+
+    if (!details.isEmpty()) {
+        auto *detailEdit = new QTextEdit(&dlg);
+        detailEdit->setReadOnly(true);
+        detailEdit->setPlainText(details.join(QLatin1Char('\n')));
+        detailEdit->setMinimumHeight(120);
+        detailEdit->setMaximumHeight(220);
+        detailEdit->setStyleSheet("background-color: #1E1E1E; color: #D4D4D4; border: 1px solid #3C3C3C; font-family: Monospace; font-size: 9pt;");
+        layout->addWidget(detailEdit);
+    }
 
     auto *btnBox = new QHBoxLayout();
     btnBox->setSpacing(8);
@@ -1117,6 +1169,9 @@ void MainWindow::onSimulatorReset()
     if (hardwareWidget) {
         hardwareWidget->resetHardware();
     }
+    if (variablesView) {
+        variablesView->applyPersistentInitialValues();
+    }
     if (!currentListingPath.isEmpty()) {
         loadListing(currentListingPath); // re-apply *[sim68k] directives
     }
@@ -1129,6 +1184,9 @@ void MainWindow::onSimulatorRewind()
     if (hardwareWidget) {
         hardwareWidget->resetHardware();
     }
+    if (variablesView) {
+        variablesView->applyPersistentInitialValues();
+    }
 }
 
 void MainWindow::onSimulatorReload()
@@ -1137,6 +1195,9 @@ void MainWindow::onSimulatorReload()
     simManager->reloadProgram();
     if (hardwareWidget) {
         hardwareWidget->resetHardware();
+    }
+    if (variablesView) {
+        variablesView->applyPersistentInitialValues();
     }
     if (!currentListingPath.isEmpty()) {
         loadListing(currentListingPath); // re-apply *[sim68k] directives
@@ -1178,6 +1239,116 @@ void MainWindow::loadListing(const QString &listingPath)
     }
     listingWidget->loadListing(listingLines);
     simManager->loadListingDirectives(listingLines);
+
+    // Parse symbols and variables from listing
+    QMap<QString, uint32_t> symbols;
+    QList<VariableEntry> discoveredVars;
+
+    QString pendingLabel;
+    uint32_t pendingLabelAddr = 0;
+
+    static const QRegularExpression equRe(QStringLiteral("^([A-Za-z_][A-Za-z0-9_]*)\\s+EQU"), QRegularExpression::CaseInsensitiveOption);
+    static const QRegularExpression labelRe(QStringLiteral("^([A-Za-z_][A-Za-z0-9_]*):?(.*)$"));
+    static const QRegularExpression varOpRe(QStringLiteral("^(DS|DC|DCB)(?:\\.([BWLbwl]))?\\s+(.*)$"), QRegularExpression::CaseInsensitiveOption);
+
+    for (const QString &line : listingLines) {
+        if (line.length() < 35) continue;
+
+        // Check for EQU lines: e.g. "00000000  =00005000                  2  MY_CONST EQU $5000"
+        int eqIdx = line.indexOf('=');
+        if (eqIdx >= 8 && eqIdx <= 15) {
+            bool okVal = false;
+            uint32_t equVal = line.mid(eqIdx + 1, 8).trimmed().toUInt(&okVal, 16);
+            if (okVal && line.length() > 40) {
+                QString src = line.mid(40).trimmed();
+                auto match = equRe.match(src);
+                if (match.hasMatch()) {
+                    QString sym = match.captured(1).toUpper();
+                    symbols[sym] = equVal;
+                    continue;
+                }
+            }
+        }
+
+        // Check if first 8 chars are a valid hex address
+        bool okAddr = false;
+        uint32_t addr = line.left(8).trimmed().toUInt(&okAddr, 16);
+        if (!okAddr) continue;
+
+        if (line.length() <= 40) continue;
+        QString src = line.mid(40);
+        if (src.trimmed().isEmpty()) continue;
+
+        bool col1HasToken = !line.at(40).isSpace();
+        QString trimmedSrc = src.trimmed();
+        if (trimmedSrc.startsWith('*') || trimmedSrc.startsWith(';')) continue;
+
+        QString lineLabel;
+        QString restOfLine;
+        if (col1HasToken) {
+            auto lMatch = labelRe.match(trimmedSrc);
+            if (lMatch.hasMatch()) {
+                lineLabel = lMatch.captured(1);
+                restOfLine = lMatch.captured(2).trimmed();
+                symbols[lineLabel.toUpper()] = addr;
+            }
+        }
+
+        QString activeLabel;
+        uint32_t varAddr = addr;
+        QString toMatch = col1HasToken ? restOfLine : trimmedSrc;
+
+        if (!lineLabel.isEmpty() && !restOfLine.isEmpty()) {
+            activeLabel = lineLabel;
+        } else if (!pendingLabel.isEmpty() && (!col1HasToken || lineLabel.isEmpty())) {
+            activeLabel = pendingLabel;
+            varAddr = pendingLabelAddr;
+        }
+
+        auto varMatch = varOpRe.match(toMatch);
+        if (varMatch.hasMatch() && !activeLabel.isEmpty()) {
+            QString op = varMatch.captured(1).toUpper();
+            QString sizeChar = varMatch.captured(2).toUpper();
+            QString operands = varMatch.captured(3).trimmed();
+
+            int byteSize = 2; // Default .W for 68000
+            if (sizeChar == "B") byteSize = 1;
+            else if (sizeChar == "L") byteSize = 4;
+            else if (sizeChar == "W") byteSize = 2;
+
+            int count = 1;
+            if (op == "DS") {
+                bool okCount = false;
+                int c = operands.toInt(&okCount);
+                if (okCount && c > 0) count = c;
+            }
+
+            VariableEntry entry;
+            entry.name = activeLabel;
+            entry.address = varAddr;
+            entry.byteSize = byteSize;
+            entry.elementCount = count;
+            entry.isCustomWatch = false;
+
+            discoveredVars.append(entry);
+            pendingLabel.clear();
+        } else {
+            if (col1HasToken && !lineLabel.isEmpty() && restOfLine.isEmpty()) {
+                pendingLabel = lineLabel;
+                pendingLabelAddr = addr;
+            } else {
+                pendingLabel.clear();
+            }
+        }
+    }
+
+    if (memoryView) {
+        memoryView->setSymbolTable(symbols);
+    }
+    if (variablesView) {
+        variablesView->setDiscoveredVariables(discoveredVars);
+    }
+
     // Loading the listing can happen after loadS68() (so *[sim68k] directives
     // survive initSim()); restore the PC highlight for the current position.
     listingWidget->highlightPC(static_cast<uint32_t>(simManager->getPC()), false);
@@ -1189,6 +1360,9 @@ void MainWindow::onSimulatorStateChanged()
                                    simManager->getPC(), simManager->getSR(),
                                    simManager->getCycles());
     memoryView->updateView();
+    if (variablesView) {
+        variablesView->updateVariables();
+    }
     if (stackView) {
         stackView->updateView();
     }

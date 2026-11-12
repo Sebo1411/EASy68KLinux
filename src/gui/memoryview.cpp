@@ -8,6 +8,8 @@
 #include <QMessageBox>
 #include <QFileDialog>
 #include <QFile>
+#include <QStringListModel>
+#include <QRegularExpression>
 #include <algorithm>
 #include <cstring>
 
@@ -396,9 +398,9 @@ void MemoryView::setupUi()
     navLayout->addWidget(new QLabel(tr("$ Address:"), this));
     addrInput = new QLineEdit("00001000", this);
     addrInput->setFont(monoFont);
-    addrInput->setMaxLength(8);
-    addrInput->setMinimumWidth(100);
-    addrInput->setMaximumWidth(120);
+    addrInput->setMinimumWidth(140);
+    addrInput->setPlaceholderText(tr("Hex or Label"));
+    addrInput->setToolTip(tr("Enter a hex address (e.g. 4000, $4000) or symbol/label name (e.g. DATA, VAR1, START+2)"));
     addrInput->setAlignment(Qt::AlignCenter);
     navLayout->addWidget(addrInput);
 
@@ -427,18 +429,14 @@ void MemoryView::setupUi()
     rangeLayout->addWidget(new QLabel(tr("From: $"), this));
     fromInput = new QLineEdit("00001000", this);
     fromInput->setFont(monoFont);
-    fromInput->setMaxLength(8);
-    fromInput->setMinimumWidth(90);
-    fromInput->setMaximumWidth(110);
+    fromInput->setMinimumWidth(110);
     fromInput->setAlignment(Qt::AlignCenter);
     rangeLayout->addWidget(fromInput);
 
     rangeLayout->addWidget(new QLabel(tr("To: $"), this));
     toInput = new QLineEdit("0000101F", this);
     toInput->setFont(monoFont);
-    toInput->setMaxLength(8);
-    toInput->setMinimumWidth(90);
-    toInput->setMaximumWidth(110);
+    toInput->setMinimumWidth(110);
     toInput->setAlignment(Qt::AlignCenter);
     rangeLayout->addWidget(toInput);
 
@@ -470,6 +468,7 @@ void MemoryView::setupUi()
     // Connections
     connect(goBtn, &QPushButton::clicked, this, &MemoryView::onGotoAddress);
     connect(addrInput, &QLineEdit::returnPressed, this, &MemoryView::onGotoAddress);
+    connect(addrInput, &QLineEdit::editingFinished, this, &MemoryView::onGotoAddress);
     connect(rowUpBtn, &QPushButton::clicked, this, &MemoryView::onRowUp);
     connect(rowDownBtn, &QPushButton::clicked, this, &MemoryView::onRowDown);
     connect(pageUpBtn, &QPushButton::clicked, this, &MemoryView::onPageUp);
@@ -516,16 +515,108 @@ void MemoryView::updateView()
     grid->refresh();
 }
 
+void MemoryView::setSymbolTable(const QMap<QString, uint32_t> &symbols)
+{
+    m_symbols = symbols;
+    QStringList words;
+    for (auto it = m_symbols.begin(); it != m_symbols.end(); ++it) {
+        words << QString("%1 ($%2)").arg(it.key()).arg(it.value(), 8, 16, QChar('0')).toUpper();
+        words << it.key();
+    }
+    words.removeDuplicates();
+
+    if (!m_completer) {
+        m_completer = new QCompleter(words, this);
+        m_completer->setCaseSensitivity(Qt::CaseInsensitive);
+        m_completer->setFilterMode(Qt::MatchContains);
+        addrInput->setCompleter(m_completer);
+    } else {
+        auto *model = new QStringListModel(words, m_completer);
+        m_completer->setModel(model);
+    }
+}
+
+void MemoryView::clearSymbolTable()
+{
+    m_symbols.clear();
+    if (m_completer) {
+        m_completer->setModel(new QStringListModel(QStringList(), m_completer));
+    }
+}
+
+bool MemoryView::resolveAddressExpression(const QString &expr, uint32_t &outAddr) const
+{
+    QString s = expr.trimmed();
+    if (s.isEmpty()) return false;
+
+    // Strip optional '( $XXXXXXXX )' or '($XXXX)' completer suffix
+    int parenIdx = s.indexOf('(');
+    if (parenIdx > 0) {
+        s = s.left(parenIdx).trimmed();
+    }
+
+    // Split on + or - if present
+    int plusIdx = s.indexOf('+');
+    int minusIdx = s.indexOf('-');
+    if (plusIdx > 0) {
+        QString leftTerm = s.left(plusIdx).trimmed();
+        QString rightTerm = s.mid(plusIdx + 1).trimmed();
+        uint32_t leftVal = 0, rightVal = 0;
+        if (resolveAddressExpression(leftTerm, leftVal) && resolveAddressExpression(rightTerm, rightVal)) {
+            outAddr = leftVal + rightVal;
+            return true;
+        }
+        return false;
+    } else if (minusIdx > 0) {
+        QString leftTerm = s.left(minusIdx).trimmed();
+        QString rightTerm = s.mid(minusIdx + 1).trimmed();
+        uint32_t leftVal = 0, rightVal = 0;
+        if (resolveAddressExpression(leftTerm, leftVal) && resolveAddressExpression(rightTerm, rightVal)) {
+            outAddr = leftVal - rightVal;
+            return true;
+        }
+        return false;
+    }
+
+    if (s.endsWith(':')) {
+        s.chop(1);
+        s = s.trimmed();
+    }
+
+    // 1. Check symbol table (case-insensitive)
+    QString upper = s.toUpper();
+    if (m_symbols.contains(upper)) {
+        outAddr = m_symbols.value(upper);
+        return true;
+    }
+
+    // 2. Check prefix $ or 0x/0X
+    if (s.startsWith('$')) {
+        bool ok = false;
+        outAddr = s.mid(1).trimmed().toUInt(&ok, 16);
+        return ok;
+    }
+    if (s.startsWith("0x", Qt::CaseInsensitive)) {
+        bool ok = false;
+        outAddr = s.mid(2).trimmed().toUInt(&ok, 16);
+        return ok;
+    }
+
+    // 3. Direct hex
+    bool ok = false;
+    outAddr = s.toUInt(&ok, 16);
+    return ok;
+}
+
 void MemoryView::onGotoAddress()
 {
     QString text = addrInput->text().trimmed();
-    if (text.startsWith('$') || text.startsWith("0x", Qt::CaseInsensitive)) {
-        text = text.mid(text.startsWith('$') ? 1 : 2);
-    }
-    bool ok = false;
-    uint32_t addr = text.toUInt(&ok, 16);
-    if (ok) {
-        setBaseAddress(addr);
+    uint32_t addr = 0;
+    if (resolveAddressExpression(text, addr)) {
+        uint32_t aligned = addr & 0x00FFFFF0;
+        grid->setBaseAddress(aligned);
+        int byteOffset = static_cast<int>(addr & 0x0F);
+        grid->setCursorPosition(0, 10 + byteOffset * 3);
     }
 }
 
@@ -601,10 +692,11 @@ bool MemoryView::fillMemory(uint32_t fromAddr, uint32_t toAddr, uint32_t pattern
 
 void MemoryView::onCopyClicked()
 {
-    bool okFrom = false, okTo = false, okBytes = false;
-    uint32_t from = fromInput->text().trimmed().toUInt(&okFrom, 16);
-    uint32_t to = addrInput->text().trimmed().toUInt(&okTo, 16);
-    uint32_t count = bytesInput->text().trimmed().toUInt(&okBytes, 16);
+    uint32_t from = 0, to = 0, count = 0;
+    bool okFrom = resolveAddressExpression(fromInput->text(), from);
+    bool okTo = resolveAddressExpression(addrInput->text(), to);
+    bool okBytes = false;
+    count = bytesInput->text().trimmed().toUInt(&okBytes, 16);
 
     if (!okFrom || !okTo || !okBytes || count == 0) {
         QMessageBox::warning(this, tr("Memory Copy"), tr("Invalid copy parameters."));
@@ -618,9 +710,10 @@ void MemoryView::onCopyClicked()
 
 void MemoryView::onFillClicked()
 {
-    bool okFrom = false, okTo = false, okBytes = false;
-    uint32_t from = fromInput->text().trimmed().toUInt(&okFrom, 16);
-    uint32_t to = toInput->text().trimmed().toUInt(&okTo, 16);
+    uint32_t from = 0, to = 0;
+    bool okFrom = resolveAddressExpression(fromInput->text(), from);
+    bool okTo = resolveAddressExpression(toInput->text(), to);
+    bool okBytes = false;
     QString pStr = bytesInput->text().trimmed();
     uint32_t pattern = pStr.toUInt(&okBytes, 16);
 
@@ -652,9 +745,9 @@ bool MemoryView::saveMemoryRange(uint32_t fromAddr, uint32_t toAddr, const QStri
 
 void MemoryView::onSaveClicked()
 {
-    bool okFrom = false, okTo = false;
-    uint32_t from = fromInput->text().trimmed().toUInt(&okFrom, 16);
-    uint32_t to = toInput->text().trimmed().toUInt(&okTo, 16);
+    uint32_t from = 0, to = 0;
+    bool okFrom = resolveAddressExpression(fromInput->text(), from);
+    bool okTo = resolveAddressExpression(toInput->text(), to);
     if (!okFrom || !okTo || from > to || to >= memorySize) {
         QMessageBox::warning(this, tr("Save Memory"), tr("Invalid From / To address range."));
         return;

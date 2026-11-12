@@ -5,6 +5,8 @@
 #include <QLineEdit>
 #include <QPushButton>
 #include <QLabel>
+#include <QMap>
+#include <QCompleter>
 #include <cstdint>
 
 enum class MemEditSubstate : uint8_t {
@@ -210,6 +212,12 @@ public:
     QString getAddressInputText() const { return addrInput ? addrInput->text() : QString(); }
     void updateView();
 
+    // Symbol table navigation & address resolution
+    void setSymbolTable(const QMap<QString, uint32_t> &symbols);
+    void clearSymbolTable();
+    bool resolveAddressExpression(const QString &expr, uint32_t &outAddr) const;
+    const QMap<QString, uint32_t>& getSymbolTable() const { return m_symbols; }
+
     // Memory operations matching Sim68K Memory1.cpp
     bool copyMemory(uint32_t fromAddr, uint32_t toAddr, uint32_t byteCount);
     bool fillMemory(uint32_t fromAddr, uint32_t toAddr, uint32_t pattern, int patternSize);
@@ -250,6 +258,8 @@ private:
     QPushButton *pageDownBtn;
 
     MemoryGridArea *grid;
+    QMap<QString, uint32_t> m_symbols;
+    QCompleter *m_completer = nullptr;
 };
 
 #endif // MEMORYVIEW_H

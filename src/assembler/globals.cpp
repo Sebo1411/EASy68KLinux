@@ -64,7 +64,7 @@ bool BITflag;           // True to assemble bitfield instructions
 bool CREflag;           // true adds symbol table to listing
 bool MEXflag;           // true expands macro calls in listing
 bool SEXflag;           // true expands structured code in listing
-bool WARflag;           // true shows Warnings during assembly
+bool WARflag = true;    // true shows Warnings during assembly
 bool noFileName;        // true indicates no name for current source file
 bool xrefFlag;          // true if cross-reference is desired
 

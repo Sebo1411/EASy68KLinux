@@ -63,6 +63,7 @@ set(SIM_CORE_SOURCES
     src/simulator/strutils.cpp
     src/simulator/utils.cpp
     src/simulator/sim_globals.cpp
+    src/simulator/disassembler.cpp
 )
 
 add_library(easy68k_sim_core STATIC ${SIM_CORE_SOURCES})
@@ -104,6 +105,7 @@ if(Qt6_FOUND)
         src/gui/easybinwidget.cpp
         src/gui/helpwidget.cpp
         src/gui/simulatormanager.cpp
+        src/gui/variablesview.cpp
         src/gui/updater.cpp
         src/easybin/fileio.cpp
     )
@@ -128,7 +130,8 @@ if(Qt6_FOUND)
             src/gui/easybinwidget.cpp
             src/gui/helpwidget.cpp
             src/gui/simulatormanager.cpp
-            src/gui/updater.cpp
+            src/gui/variablesview.cpp
+        src/gui/updater.cpp
             src/easybin/fileio.cpp
         )
         target_compile_definitions(test_gui PRIVATE EASY68K_VERSION_STRING="${PROJECT_VERSION}")

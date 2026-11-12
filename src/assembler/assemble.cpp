@@ -169,6 +169,7 @@ int assembleFile(const char fileName[], const char listName[], const char srecNa
   g_asmMessages.clear();
   strncpy(currentFile, fileName, 255); currentFile[255] = '\0';
   errorCount = warningCount = 0;
+  WARflag = true;
 
   try {
     tmpFile = tmpfile();

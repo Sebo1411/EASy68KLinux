@@ -48,6 +48,7 @@ int main(int argc, char* argv[]) {
     BITflag = false;
     CREflag = false;
     MEXflag = false;
+    WARflag = true;
     SEXflag = false;
 
     for (int i = 1; i < argc; ++i) {

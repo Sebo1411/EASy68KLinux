@@ -1,5 +1,6 @@
 #include "listingwidget.h"
 #include "simulatormanager.h"
+#include "disassembler.h"
 #include <QPainter>
 #include <QPainterPath>
 #include <QMouseEvent>
@@ -7,6 +8,7 @@
 #include <QVBoxLayout>
 #include <QLabel>
 #include <QFontMetrics>
+#include <QRegularExpression>
 #include <algorithm>
 
 bool ListingScrollArea::isInstructionLine(const QString &line)
@@ -236,16 +238,64 @@ void ListingScrollArea::paintEvent(QPaintEvent * /* event */)
         bool hasBp = (isInstr && simManager && simManager->hasBreakpoint(addr));
 
         bool isModified = false;
-        uint16_t liveWord = 0;
-        if (isInstr && simManager && simManager->getMemory() && addr + 1 < simManager->getMemorySize() && line.length() >= 14) {
-            bool hexOk = false;
-            uint16_t assembledWord = line.mid(10, 4).toUShort(&hexOk, 16);
-            if (hexOk) {
-                const auto *mem = reinterpret_cast<const unsigned char*>(simManager->getMemory());
-                liveWord = (static_cast<uint16_t>(mem[addr]) << 8) | static_cast<uint16_t>(mem[addr + 1]);
-                if (liveWord != assembledWord) {
-                    isModified = true;
+        QString modifiedCodeDisplay;
+        QString disassembledInstr;
+
+        if (isInstr && simManager && simManager->getMemory() && line.length() >= 14) {
+            const auto *mem = reinterpret_cast<const unsigned char*>(simManager->getMemory());
+            uint32_t memSize = simManager->getMemorySize();
+            QString codePart = (line.length() >= 32) ? line.mid(10, 22) : line.mid(10);
+            QStringList tokens = codePart.split(QRegularExpression("\\s+"), Qt::SkipEmptyParts);
+            QVector<uint16_t> assembledWords;
+            for (const QString &tok : tokens) {
+                if (tok.length() == 4) {
+                    bool ok = false;
+                    uint16_t w = tok.toUShort(&ok, 16);
+                    if (ok) assembledWords.append(w);
+                } else if (tok.length() == 8) {
+                    bool ok1 = false, ok2 = false;
+                    uint16_t w1 = tok.left(4).toUShort(&ok1, 16);
+                    uint16_t w2 = tok.mid(4, 4).toUShort(&ok2, 16);
+                    if (ok1 && ok2) {
+                        assembledWords.append(w1);
+                        assembledWords.append(w2);
+                    }
                 }
+            }
+
+            if (!assembledWords.isEmpty()) {
+                for (int i = 0; i < assembledWords.size(); ++i) {
+                    uint32_t wAddr = addr + i * 2;
+                    if (wAddr + 1 < memSize) {
+                        uint16_t liveW = (static_cast<uint16_t>(mem[wAddr]) << 8) | static_cast<uint16_t>(mem[wAddr + 1]);
+                        if (liveW != assembledWords[i]) {
+                            isModified = true;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if (isModified) {
+                if (assembledWords.size() == 1 && addr + 1 < memSize) {
+                    uint16_t liveW = (static_cast<uint16_t>(mem[addr]) << 8) | static_cast<uint16_t>(mem[addr + 1]);
+                    modifiedCodeDisplay = QString("%1 -> %2")
+                        .arg(assembledWords[0], 4, 16, QChar('0'))
+                        .arg(liveW, 4, 16, QChar('0')).toUpper();
+                } else {
+                    QString liveList;
+                    for (int i = 0; i < assembledWords.size(); ++i) {
+                        uint32_t wAddr = addr + i * 2;
+                        if (wAddr + 1 < memSize) {
+                            uint16_t liveW = (static_cast<uint16_t>(mem[wAddr]) << 8) | static_cast<uint16_t>(mem[wAddr + 1]);
+                            if (!liveList.isEmpty()) liveList += " ";
+                            liveList += QString("%1").arg(liveW, 4, 16, QChar('0')).toUpper();
+                        }
+                    }
+                    modifiedCodeDisplay = QString("-> %1").arg(liveList);
+                }
+                std::string disasm = disassemble68k(mem, memSize, addr);
+                disassembledInstr = QString::fromStdString(disasm);
             }
         }
 
@@ -312,14 +362,9 @@ void ListingScrollArea::paintEvent(QPaintEvent * /* event */)
                 QString codePart = line.mid(10, 22);
                 QString srcPart = line.mid(32);
 
-                QString codeDisplay = codePart;
-                if (isModified) {
-                    QString memTag = QString("[mem: %1]").arg(liveWord, 4, 16, QChar('0')).toUpper();
-                    QString trimmedCode = codePart.trimmed();
-                    codeDisplay = QString("%1 %2").arg(trimmedCode, memTag);
-                    if (codeDisplay.length() < 22) {
-                        codeDisplay = codeDisplay.leftJustified(22, ' ');
-                    }
+                QString codeDisplay = isModified ? modifiedCodeDisplay : codePart;
+                if (codeDisplay.length() < 22) {
+                    codeDisplay = codeDisplay.leftJustified(22, ' ');
                 }
 
                 painter.setPen(Qt::white);
@@ -328,7 +373,7 @@ void ListingScrollArea::paintEvent(QPaintEvent * /* event */)
 
                 if (isModified) {
                     QRect modBg(xCode - 2, y + 1, fm.horizontalAdvance(codeDisplay) + 4, rowHeight - 2);
-                    painter.fillRect(modBg, QColor(0xFF, 0xCC, 0x00, 50));
+                    painter.fillRect(modBg, QColor(0xFF, 0xCC, 0x00, 45));
                     painter.setPen(QColor(0xFF, 0xCC, 0x00));
                 } else {
                     painter.setPen(Qt::white);
@@ -338,6 +383,32 @@ void ListingScrollArea::paintEvent(QPaintEvent * /* event */)
 
                 painter.setPen(Qt::white);
                 painter.drawText(xSrc, textY, srcPart);
+
+                if (isModified && !disassembledInstr.isEmpty()) {
+                    int pillX = xSrc + fm.horizontalAdvance(srcPart) + 10;
+                    QString pillText = QString("  ==>  %1  ").arg(disassembledInstr);
+                    int pillW = fm.horizontalAdvance(pillText) + 8;
+                    int pillH = rowHeight - 4;
+                    QRect pillRect(pillX, y + 2, pillW, pillH);
+
+                    painter.save();
+                    painter.setRenderHint(QPainter::Antialiasing, true);
+                    painter.setBrush(QColor(0x3D, 0x2E, 0x00));
+                    painter.setPen(QPen(QColor(0xFF, 0xCC, 0x00), 1.0));
+                    painter.drawRoundedRect(pillRect, 4.0, 4.0);
+
+                    QFont badgeFont = font();
+                    badgeFont.setBold(true);
+                    painter.setFont(badgeFont);
+                    painter.setPen(QColor(0xFF, 0xD7, 0x00));
+                    painter.drawText(pillRect, Qt::AlignCenter, pillText);
+                    painter.restore();
+
+                    if (pillRect.right() + 30 > maxLineWidthPx) {
+                        maxLineWidthPx = pillRect.right() + 30;
+                        horizontalScrollBar()->setRange(0, std::max(0, maxLineWidthPx - viewport()->width()));
+                    }
+                }
             } else {
                 painter.setPen(Qt::white);
                 painter.drawText(textX, textY, line);
@@ -364,16 +435,13 @@ void ListingScrollArea::paintEvent(QPaintEvent * /* event */)
                 int xCode = textX + fm.horizontalAdvance(addrPart);
 
                 // 2. Machine code hex column (#4EC9B0 bright teal, or #FFCC00 gold for self-modifying code)
-                QString codeDisplay = codePart;
+                QString codeDisplay = isModified ? modifiedCodeDisplay : codePart;
+                if (codeDisplay.length() < 22) {
+                    codeDisplay = codeDisplay.leftJustified(22, ' ');
+                }
                 if (isModified) {
-                    QString memTag = QString("[mem: %1]").arg(liveWord, 4, 16, QChar('0')).toUpper();
-                    QString trimmedCode = codePart.trimmed();
-                    codeDisplay = QString("%1 %2").arg(trimmedCode, memTag);
-                    if (codeDisplay.length() < 22) {
-                        codeDisplay = codeDisplay.leftJustified(22, ' ');
-                    }
                     QRect modBg(xCode - 2, y + 1, fm.horizontalAdvance(codeDisplay) + 4, rowHeight - 2);
-                    painter.fillRect(modBg, QColor(0xFF, 0xCC, 0x00, 40));
+                    painter.fillRect(modBg, QColor(0xFF, 0xCC, 0x00, 45));
                     painter.setPen(QColor(0xFF, 0xCC, 0x00));
                 } else {
                     painter.setPen(QColor(0x4E, 0xC9, 0xB0));
@@ -388,6 +456,32 @@ void ListingScrollArea::paintEvent(QPaintEvent * /* event */)
                     painter.setPen(QColor(0xD4, 0xD4, 0xD4));
                 }
                 painter.drawText(xSrc, textY, srcPart);
+
+                if (isModified && !disassembledInstr.isEmpty()) {
+                    int pillX = xSrc + fm.horizontalAdvance(srcPart) + 10;
+                    QString pillText = QString("  ==>  %1  ").arg(disassembledInstr);
+                    int pillW = fm.horizontalAdvance(pillText) + 8;
+                    int pillH = rowHeight - 4;
+                    QRect pillRect(pillX, y + 2, pillW, pillH);
+
+                    painter.save();
+                    painter.setRenderHint(QPainter::Antialiasing, true);
+                    painter.setBrush(QColor(0x3D, 0x2E, 0x00));
+                    painter.setPen(QPen(QColor(0xFF, 0xCC, 0x00), 1.0));
+                    painter.drawRoundedRect(pillRect, 4.0, 4.0);
+
+                    QFont badgeFont = font();
+                    badgeFont.setBold(true);
+                    painter.setFont(badgeFont);
+                    painter.setPen(QColor(0xFF, 0xD7, 0x00));
+                    painter.drawText(pillRect, Qt::AlignCenter, pillText);
+                    painter.restore();
+
+                    if (pillRect.right() + 30 > maxLineWidthPx) {
+                        maxLineWidthPx = pillRect.right() + 30;
+                        horizontalScrollBar()->setRange(0, std::max(0, maxLineWidthPx - viewport()->width()));
+                    }
+                }
             } else {
                 painter.setPen(QColor(0xD4, 0xD4, 0xD4));
                 painter.drawText(textX, textY, line);

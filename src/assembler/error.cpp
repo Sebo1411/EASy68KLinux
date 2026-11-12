@@ -38,6 +38,7 @@ extern char buffer[256];  //ck used to form messages for display in windows
 extern char numBuf[20];
 extern bool WARflag;
 extern int lineNumL68;      // listing line number
+extern char *token[];
 
 extern char includeFile[256];  // name of current include file
 extern bool includedFileError; // true if include error message displayed
@@ -106,9 +107,33 @@ int printError(FILE *outFile, int errorCode, int lineNum)
     case DIV_BY_ZERO:
       sprintf(buffer, "ERROR: Division by zero attempted\n");
       break;
-    case INV_OPCODE:
-      sprintf(buffer, "ERROR: Invalid opcode\n");
+    case INV_OPCODE: {
+      bool isDirectiveOrMnemonic = false;
+      if (token[0] != nullptr && token[0][0] != '\0') {
+        const char *t0 = token[0];
+        if (!strcasecmp(t0, "END") || !strcasecmp(t0, "ORG") ||
+            !strcasecmp(t0, "SIMHALT") || !strcasecmp(t0, "RTS") ||
+            !strcasecmp(t0, "TRAP") || !strcasecmp(t0, "BRA") ||
+            !strcasecmp(t0, "BSR") || !strcasecmp(t0, "JSR") ||
+            !strcasecmp(t0, "JMP") ||
+            !strncasecmp(t0, "MOVE", 4) || !strncasecmp(t0, "ADD", 3) ||
+            !strncasecmp(t0, "SUB", 3) || !strncasecmp(t0, "LSL", 3) ||
+            !strncasecmp(t0, "LSR", 3) || !strncasecmp(t0, "ASL", 3) ||
+            !strncasecmp(t0, "ASR", 3) || !strncasecmp(t0, "CMP", 3) ||
+            !strncasecmp(t0, "AND", 3) || !strncasecmp(t0, "OR", 2) ||
+            !strncasecmp(t0, "EOR", 3) || !strncasecmp(t0, "CLR", 3) ||
+            !strncasecmp(t0, "TST", 3) || !strncasecmp(t0, "B", 1) ||
+            !strncasecmp(t0, "DC", 2) || !strncasecmp(t0, "DS", 2)) {
+          isDirectiveOrMnemonic = true;
+        }
+      }
+      if (isDirectiveOrMnemonic) {
+        sprintf(buffer, "ERROR: Invalid opcode (Note: '%s' in column 1 was treated as a label; indent directives/instructions with spaces or TAB)\n", token[0]);
+      } else {
+        sprintf(buffer, "ERROR: Invalid opcode\n");
+      }
       break;
+    }
     case INV_SIZE_CODE:
       sprintf(buffer, "ERROR: Invalid size code\n");
       break;

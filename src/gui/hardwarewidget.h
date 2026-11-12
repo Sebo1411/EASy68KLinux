@@ -46,7 +46,9 @@ public:
 
     // Getters for testing and inspection
     uint8_t getSevenSegmentValue(int digitIndex) const;
+    QWidget* getSevenSegmentWidget() const { return reinterpret_cast<QWidget*>(sevenSegWidget); }
     uint8_t getLEDValue() const;
+    QWidget* getLedBankWidget() const { return reinterpret_cast<QWidget*>(ledBankWidget); }
     uint8_t getSwitchValue() const;
     uint8_t getPushbuttonValue() const;
     QColor  getCanvasPixel(int x, int y) const;

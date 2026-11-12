@@ -35,7 +35,8 @@ static inline int encodeColor(const QColor &col) {
 HardwareWidget::SevenSegmentDisplayWidget::SevenSegmentDisplayWidget(QWidget *parent)
     : QWidget(parent)
 {
-    setMinimumSize(420, 80);
+    setMinimumSize(520, 96);
+    setFixedHeight(96);
     setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     for (int i = 0; i < 8; ++i) {
         digits[i] = 0;
@@ -55,72 +56,99 @@ void HardwareWidget::SevenSegmentDisplayWidget::paintEvent(QPaintEvent *)
     QPainter p(this);
     p.setRenderHint(QPainter::Antialiasing);
 
-    // Bezel background
-    p.fillRect(rect(), QColor(20, 20, 24));
-    p.setPen(QColor(60, 60, 70));
+    // Dark sleek hardware bezel background and frame
+    p.fillRect(rect(), QColor(0x14, 0x14, 0x18));
+    p.setPen(QColor(0x2D, 0x2D, 0x35));
     p.drawRect(rect().adjusted(0, 0, -1, -1));
 
     const int totalDigits = 8;
-    const qreal digitWidth = (width() - 20) / static_cast<qreal>(totalDigits);
-    const qreal digitHeight = height() - 16;
-    const qreal startY = 8;
+    const qreal step = width() / static_cast<qreal>(totalDigits);
+    const qreal digitH = 54.0;
+    const qreal digitW = qMin(step * 0.55, 34.0);
+    const qreal startY = 26.0;
+    const qreal t = 4.8;
+    const qreal gap = 1.4;
+
+    auto makeHorizontalHex = [](qreal x0, qreal x1, qreal y0, qreal thick) {
+        QPainterPath path;
+        qreal yMid = y0 + thick / 2.0;
+        qreal yBot = y0 + thick;
+        path.moveTo(x0, yMid);
+        path.lineTo(x0 + thick / 2.0, y0);
+        path.lineTo(x1 - thick / 2.0, y0);
+        path.lineTo(x1, yMid);
+        path.lineTo(x1 - thick / 2.0, yBot);
+        path.lineTo(x0 + thick / 2.0, yBot);
+        path.closeSubpath();
+        return path;
+    };
+
+    auto makeVerticalHex = [](qreal x0, qreal y0, qreal y1, qreal thick) {
+        QPainterPath path;
+        qreal xMid = x0 + thick / 2.0;
+        qreal xRight = x0 + thick;
+        path.moveTo(xMid, y0);
+        path.lineTo(xRight, y0 + thick / 2.0);
+        path.lineTo(xRight, y1 - thick / 2.0);
+        path.lineTo(xMid, y1);
+        path.lineTo(x0, y1 - thick / 2.0);
+        path.lineTo(x0, y0 + thick / 2.0);
+        path.closeSubpath();
+        return path;
+    };
+
+    QFont monoFont("Monospace", 8);
+    monoFont.setStyleHint(QFont::Monospace);
+    p.setFont(monoFont);
+
+    QColor litFill(0xFF, 0x2A, 0x2A);
+    QPen litPen(QColor(255, 60, 60, 80), 1.0);
+    QColor unlitFill(0x2A, 0x14, 0x16);
+    QPen unlitPen(Qt::NoPen);
 
     for (int i = 0; i < totalDigits; ++i) {
-        qreal x = 10 + i * digitWidth;
-        qreal w = digitWidth - 8;
-        qreal h = digitHeight;
+        qreal cellX = i * step;
+
+        // Draw hardware address label ($E00000..$E0000E) centered at top
+        p.setPen(QColor(0x85, 0x85, 0x85));
+        QRectF labelRect(cellX, 4, step, 16);
+        p.drawText(labelRect, Qt::AlignCenter, QString("$E0000%1").arg(i * 2, 1, 16).toUpper());
+
+        // Center digit box inside its 1/8th cell with space for DP
+        qreal x = cellX + (step - digitW) / 2.0 - 4.0;
+        qreal y = startY;
 
         uint8_t mask = digits[i];
 
-        QColor onColor(255, 30, 30);
-        QColor offColor(45, 12, 12);
+        qreal yA = y;
+        qreal yD = y + digitH - t;
+        qreal yG = y + digitH / 2.0 - t / 2.0;
+        qreal xLeft = x;
+        qreal xRight = x + digitW - t;
 
-        // Segment dimensions
-        qreal segThick = qMax(3.0, w * 0.16);
+        QPainterPath segA = makeHorizontalHex(xLeft + t / 2.0 + gap, xRight + t / 2.0 - gap, yA, t);
+        QPainterPath segB = makeVerticalHex(xRight, yA + t / 2.0 + gap, yG + t / 2.0 - gap, t);
+        QPainterPath segC = makeVerticalHex(xRight, yG + t / 2.0 + gap, yD + t / 2.0 - gap, t);
+        QPainterPath segD = makeHorizontalHex(xLeft + t / 2.0 + gap, xRight + t / 2.0 - gap, yD, t);
+        QPainterPath segE = makeVerticalHex(xLeft, yG + t / 2.0 + gap, yD + t / 2.0 - gap, t);
+        QPainterPath segF = makeVerticalHex(xLeft, yA + t / 2.0 + gap, yG + t / 2.0 - gap, t);
+        QPainterPath segG = makeHorizontalHex(xLeft + t / 2.0 + gap, xRight + t / 2.0 - gap, yG, t);
 
-        // Define segment rects
-        // a: top
-        QRectF segA(x + segThick, startY, w - 2 * segThick - 4, segThick);
-        // b: top-right
-        QRectF segB(x + w - segThick - 4, startY + segThick, segThick, (h / 2) - segThick);
-        // c: bottom-right
-        QRectF segC(x + w - segThick - 4, startY + (h / 2), segThick, (h / 2) - segThick);
-        // d: bottom
-        QRectF segD(x + segThick, startY + h - segThick, w - 2 * segThick - 4, segThick);
-        // e: bottom-left
-        QRectF segE(x, startY + (h / 2), segThick, (h / 2) - segThick);
-        // f: top-left
-        QRectF segF(x, startY + segThick, segThick, (h / 2) - segThick);
-        // g: middle
-        QRectF segG(x + segThick, startY + (h / 2) - (segThick / 2), w - 2 * segThick - 4, segThick);
-        // dp: dot
-        QRectF segDP(x + w - 3, startY + h - segThick, segThick, segThick);
+        const QPainterPath *paths[7] = { &segA, &segB, &segC, &segD, &segE, &segF, &segG };
+        for (int b = 0; b < 7; ++b) {
+            bool on = (mask & (1 << b)) != 0;
+            p.setPen(on ? litPen : unlitPen);
+            p.setBrush(on ? litFill : unlitFill);
+            p.drawPath(*paths[b]);
+        }
 
-        p.setPen(Qt::NoPen);
-
-        p.setBrush((mask & (1 << 0)) ? onColor : offColor);
-        p.drawRoundedRect(segA, 1.5, 1.5);
-
-        p.setBrush((mask & (1 << 1)) ? onColor : offColor);
-        p.drawRoundedRect(segB, 1.5, 1.5);
-
-        p.setBrush((mask & (1 << 2)) ? onColor : offColor);
-        p.drawRoundedRect(segC, 1.5, 1.5);
-
-        p.setBrush((mask & (1 << 3)) ? onColor : offColor);
-        p.drawRoundedRect(segD, 1.5, 1.5);
-
-        p.setBrush((mask & (1 << 4)) ? onColor : offColor);
-        p.drawRoundedRect(segE, 1.5, 1.5);
-
-        p.setBrush((mask & (1 << 5)) ? onColor : offColor);
-        p.drawRoundedRect(segF, 1.5, 1.5);
-
-        p.setBrush((mask & (1 << 6)) ? onColor : offColor);
-        p.drawRoundedRect(segG, 1.5, 1.5);
-
-        p.setBrush((mask & (1 << 7)) ? onColor : offColor);
-        p.drawEllipse(segDP);
+        // Decimal point (DP, bit 7)
+        bool dpOn = (mask & (1 << 7)) != 0;
+        p.setPen(dpOn ? litPen : unlitPen);
+        p.setBrush(dpOn ? litFill : unlitFill);
+        qreal dpX = x + digitW + 5.0;
+        qreal dpY = y + digitH - 3.5;
+        p.drawEllipse(QPointF(dpX, dpY), 2.8, 2.8);
     }
 }
 
@@ -130,7 +158,8 @@ void HardwareWidget::SevenSegmentDisplayWidget::paintEvent(QPaintEvent *)
 HardwareWidget::LedBankWidget::LedBankWidget(QWidget *parent)
     : QWidget(parent)
 {
-    setMinimumSize(420, 40);
+    setMinimumSize(520, 58);
+    setFixedHeight(58);
     setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
 }
 
@@ -145,16 +174,16 @@ void HardwareWidget::LedBankWidget::paintEvent(QPaintEvent *)
     QPainter p(this);
     p.setRenderHint(QPainter::Antialiasing);
 
-    p.fillRect(rect(), QColor(25, 25, 30));
-    p.setPen(QColor(60, 60, 70));
+    p.fillRect(rect(), QColor(0x18, 0x18, 0x1C));
+    p.setPen(QColor(0x2D, 0x2D, 0x35));
     p.drawRect(rect().adjusted(0, 0, -1, -1));
 
     const qreal step = width() / 8.0;
-    const qreal radius = qMin(12.0, (height() - 14) / 2.0);
+    const qreal radius = 10.0;
+    const qreal cy = 20.0;
 
-    QFont font = p.font();
-    font.setPointSize(8);
-    font.setBold(true);
+    QFont font("Monospace", 8, QFont::Bold);
+    font.setStyleHint(QFont::Monospace);
     p.setFont(font);
 
     for (int i = 0; i < 8; ++i) {
@@ -162,30 +191,37 @@ void HardwareWidget::LedBankWidget::paintEvent(QPaintEvent *)
         bool isOn = (ledsValue & (1 << bit)) != 0;
 
         qreal cx = step * i + step / 2.0;
-        qreal cy = 18.0;
 
-        // Draw LED ring
-        p.setPen(QColor(80, 80, 90));
-        p.setBrush(QColor(15, 15, 20));
-        p.drawEllipse(QPointF(cx, cy), radius + 2.0, radius + 2.0);
+        // Metallic outer bezel ring
+        p.setPen(QColor(0x4A, 0x4A, 0x55));
+        p.setBrush(QColor(0x3C, 0x3C, 0x44));
+        p.drawEllipse(QPointF(cx, cy), radius + 2.5, radius + 2.5);
 
-        // Draw LED center
+        // Dark recessed socket
+        p.setPen(Qt::NoPen);
+        p.setBrush(QColor(0x12, 0x12, 0x16));
+        p.drawEllipse(QPointF(cx, cy), radius + 0.5, radius + 0.5);
+
+        // Radial gradient LED lens
         if (isOn) {
-            QRadialGradient grad(cx - 2, cy - 2, radius);
-            grad.setColorAt(0.0, QColor(255, 120, 120));
-            grad.setColorAt(0.7, QColor(255, 20, 20));
-            grad.setColorAt(1.0, QColor(160, 0, 0));
+            QRadialGradient grad(cx - 3, cy - 3, radius);
+            grad.setColorAt(0.0, QColor(0xFF, 0x80, 0x80));
+            grad.setColorAt(0.5, QColor(0xFF, 0x20, 0x20));
+            grad.setColorAt(1.0, QColor(0xB0, 0x00, 0x00));
             p.setBrush(grad);
-            p.setPen(Qt::NoPen);
+            p.setPen(QColor(0xFF, 0x40, 0x40, 100));
         } else {
-            p.setBrush(QColor(40, 10, 10));
-            p.setPen(QColor(25, 5, 5));
+            QRadialGradient grad(cx - 2, cy - 2, radius);
+            grad.setColorAt(0.0, QColor(0x45, 0x15, 0x15));
+            grad.setColorAt(1.0, QColor(0x20, 0x08, 0x08));
+            p.setBrush(grad);
+            p.setPen(QColor(0x1A, 0x05, 0x05));
         }
         p.drawEllipse(QPointF(cx, cy), radius, radius);
 
-        // Label
-        p.setPen(QColor(180, 180, 190));
-        p.drawText(QRectF(cx - 15, cy + radius + 1, 30, 16), Qt::AlignCenter, QString::number(bit));
+        // Visible bit label with ample bottom margin
+        p.setPen(isOn ? QColor(0xCC, 0xCC, 0xCC) : QColor(0x85, 0x85, 0x85));
+        p.drawText(QRectF(cx - 28, 35, 56, 18), Qt::AlignCenter, QString("LED %1").arg(bit));
     }
 }
 
@@ -219,25 +255,36 @@ HardwareWidget::HardwareWidget(QWidget *parent)
 
 void HardwareWidget::setupUi()
 {
-    auto *mainLayout = new QVBoxLayout(this);
-    mainLayout->setContentsMargins(6, 6, 6, 6);
-    mainLayout->setSpacing(8);
+    auto *outerLayout = new QVBoxLayout(this);
+    outerLayout->setContentsMargins(0, 0, 0, 0);
+    outerLayout->setSpacing(0);
+
+    auto *outerScrollArea = new QScrollArea(this);
+    outerScrollArea->setWidgetResizable(true);
+    outerScrollArea->setFrameShape(QFrame::NoFrame);
+    outerScrollArea->setStyleSheet("QScrollArea { background-color: #1E1E1E; border: none; }");
+
+    auto *contentWidget = new QWidget(outerScrollArea);
+    contentWidget->setObjectName("hardwareContentWidget");
+    auto *mainLayout = new QVBoxLayout(contentWidget);
+    mainLayout->setContentsMargins(8, 8, 8, 8);
+    mainLayout->setSpacing(10);
 
     // 1. Simulated Peripherals Box
-    auto *periphBox = new QGroupBox(tr("Simulated Peripherals (Hardware I/O)"), this);
+    auto *periphBox = new QGroupBox(tr("Simulated Peripherals (Hardware I/O)"), contentWidget);
     auto *periphLayout = new QVBoxLayout(periphBox);
-    periphLayout->setSpacing(6);
+    periphLayout->setSpacing(8);
 
     // 7-Segment Display
     auto *segLabel = new QLabel(tr("7-Segment Display (8 Digits @ $E00000..$E0000E):"), periphBox);
-    segLabel->setStyleSheet("font-weight: bold;");
+    segLabel->setStyleSheet("font-weight: bold; color: #CCCCCC;");
     periphLayout->addWidget(segLabel);
     sevenSegWidget = new SevenSegmentDisplayWidget(periphBox);
     periphLayout->addWidget(sevenSegWidget);
 
     // LED Indicators
     auto *ledLabel = new QLabel(tr("LED Indicators (8 LEDs @ $E00010):"), periphBox);
-    ledLabel->setStyleSheet("font-weight: bold;");
+    ledLabel->setStyleSheet("font-weight: bold; color: #CCCCCC;");
     periphLayout->addWidget(ledLabel);
     ledBankWidget = new LedBankWidget(periphBox);
     periphLayout->addWidget(ledBankWidget);
@@ -247,12 +294,47 @@ void HardwareWidget::setupUi()
     controlsGrid->setSpacing(6);
 
     auto *swGroupLabel = new QLabel(tr("Toggle Switches ($E00012):"), periphBox);
-    swGroupLabel->setStyleSheet("font-weight: bold;");
+    swGroupLabel->setStyleSheet("font-weight: bold; color: #CCCCCC;");
     controlsGrid->addWidget(swGroupLabel, 0, 0, 1, 8);
+
+    QString switchStyle = QStringLiteral(
+        "QCheckBox {"
+        "    background-color: #252526;"
+        "    color: #CCCCCC;"
+        "    border: 1px solid #3C3C3C;"
+        "    border-radius: 4px;"
+        "    padding: 4px 8px;"
+        "    font-family: Monospace;"
+        "    font-weight: bold;"
+        "}"
+        "QCheckBox:hover {"
+        "    background-color: #2D2D30;"
+        "    border-color: #555555;"
+        "}"
+        "QCheckBox:checked {"
+        "    background-color: #143622;"
+        "    border: 1px solid #4EC9B0;"
+        "    color: #4EC9B0;"
+        "}"
+        "QCheckBox::indicator {"
+        "    width: 14px;"
+        "    height: 14px;"
+        "    border-radius: 2px;"
+        "    border: 1px solid #5A5A66;"
+        "    background: #1E1E24;"
+        "}"
+        "QCheckBox::indicator:checked {"
+        "    background-color: #16A34A;"
+        "    border: 1px solid #4EC9B0;"
+        "}"
+    );
 
     for (int i = 0; i < 8; ++i) {
         int bit = 7 - i;
         switches[bit] = new QCheckBox(QString("SW%1").arg(bit), periphBox);
+        switches[bit]->setMinimumHeight(30);
+        switches[bit]->setCursor(Qt::PointingHandCursor);
+        switches[bit]->setStyleSheet(switchStyle);
         controlsGrid->addWidget(switches[bit], 1, i);
         connect(switches[bit], &QCheckBox::toggled, this, [this, bit](bool checked) {
             onSwitchToggled(bit, checked);
@@ -260,13 +342,41 @@ void HardwareWidget::setupUi()
     }
 
     auto *pbGroupLabel = new QLabel(tr("Pushbuttons (Normally High, $E00014):"), periphBox);
-    pbGroupLabel->setStyleSheet("font-weight: bold;");
+    pbGroupLabel->setStyleSheet("font-weight: bold; color: #CCCCCC;");
     controlsGrid->addWidget(pbGroupLabel, 2, 0, 1, 8);
+
+    QString pbStyle = QStringLiteral(
+        "QPushButton {"
+        "    background-color: #2D2D30;"
+        "    color: #E0E0E0;"
+        "    border: 1px solid #45454D;"
+        "    border-bottom: 3px solid #1E1E1E;"
+        "    border-radius: 4px;"
+        "    font-family: Monospace;"
+        "    font-weight: bold;"
+        "    padding: 4px 8px;"
+        "}"
+        "QPushButton:hover {"
+        "    background-color: #38383D;"
+        "    border-color: #007ACC;"
+        "}"
+        "QPushButton:pressed {"
+        "    background-color: #094771;"
+        "    color: #FFFFFF;"
+        "    border: 1px solid #3794FF;"
+        "    border-bottom: 1px solid #3794FF;"
+        "    padding-top: 6px;"
+        "    padding-bottom: 2px;"
+        "}"
+    );
 
     for (int i = 0; i < 8; ++i) {
         int bit = 7 - i;
         pushButtons[bit] = new QPushButton(QString("PB%1").arg(bit), periphBox);
-        pushButtons[bit]->setMinimumWidth(36);
+        pushButtons[bit]->setMinimumHeight(30);
+        pushButtons[bit]->setMinimumWidth(52);
+        pushButtons[bit]->setCursor(Qt::PointingHandCursor);
+        pushButtons[bit]->setStyleSheet(pbStyle);
         controlsGrid->addWidget(pushButtons[bit], 3, i);
 
         connect(pushButtons[bit], &QPushButton::pressed, this, [this, bit]() {
@@ -284,22 +394,48 @@ void HardwareWidget::setupUi()
     auto *middleLayout = new QHBoxLayout();
 
     // Interrupt Box (matching Sim68K Hardware.png)
-    auto *irqBox = new QGroupBox(tr("Interrupts & Reset"), this);
+    auto *irqBox = new QGroupBox(tr("Interrupts & Reset"), contentWidget);
     auto *irqMainLayout = new QVBoxLayout(irqBox);
-    irqMainLayout->setSpacing(4);
+    irqMainLayout->setSpacing(6);
 
     auto *irqBtnRow = new QHBoxLayout();
     irqBtnRow->setSpacing(4);
+
+    QString irqStyle = QStringLiteral(
+        "QPushButton {"
+        "    background-color: #881337;"
+        "    color: #FFFFFF;"
+        "    border: 1px solid #9F1239;"
+        "    border-bottom: 2px solid #4C0519;"
+        "    border-radius: 3px;"
+        "    font-weight: bold;"
+        "    padding: 3px 6px;"
+        "}"
+        "QPushButton:hover {"
+        "    background-color: #9F1239;"
+        "    border-color: #BE123C;"
+        "}"
+        "QPushButton:pressed {"
+        "    background-color: #BE123C;"
+        "    border-bottom: 1px solid #BE123C;"
+        "    padding-top: 4px;"
+        "    padding-bottom: 2px;"
+        "}"
+    );
+
     for (int i = 0; i < 7; ++i) {
         int level = i + 1;
         irqButtons[i] = new QPushButton(QString("IRQ %1").arg(level), irqBox);
-        irqButtons[i]->setStyleSheet("font-weight: bold; background-color: #881337; color: white;");
+        irqButtons[i]->setMinimumHeight(28);
+        irqButtons[i]->setStyleSheet(irqStyle);
         irqBtnRow->addWidget(irqButtons[i]);
         connect(irqButtons[i], &QPushButton::clicked, this, [this, level]() {
             triggerInterrupt(level);
         });
     }
     hwResetBtn = new QPushButton(tr("Reset"), irqBox);
+    hwResetBtn->setMinimumHeight(28);
+    hwResetBtn->setStyleSheet(irqStyle);
     hwResetBtn->setToolTip(tr("Reset 68000 Processor & Peripherals"));
     irqBtnRow->addWidget(hwResetBtn);
     connect(hwResetBtn, &QPushButton::clicked, this, [this]() {
@@ -307,6 +443,21 @@ void HardwareWidget::setupUi()
         emit hardwareResetRequested();
     });
     irqMainLayout->addLayout(irqBtnRow);
+
+    QString hexEditStyle = QStringLiteral(
+        "QLineEdit {"
+        "    background-color: #1E1E1E;"
+        "    color: #9CDCFE;"
+        "    border: 1px solid #3C3C3C;"
+        "    border-radius: 3px;"
+        "    padding: 2px 4px;"
+        "    font-family: Monospace;"
+        "    font-weight: bold;"
+        "}"
+        "QLineEdit:focus {"
+        "    border-color: #007ACC;"
+        "}"
+    );
 
     auto *autoIrqRow = new QHBoxLayout();
     autoIrqRow->setSpacing(6);
@@ -316,7 +467,11 @@ void HardwareWidget::setupUi()
         autoIrqCombo->addItem(QString("IRQ %1").arg(level), level);
     }
     autoIrqIntervalEdit = new QLineEdit("1000", irqBox);
-    autoIrqIntervalEdit->setMaximumWidth(65);
+    autoIrqIntervalEdit->setMinimumWidth(74);
+    autoIrqIntervalEdit->setMinimumHeight(26);
+    autoIrqIntervalEdit->setAlignment(Qt::AlignCenter);
+    autoIrqIntervalEdit->setStyleSheet(hexEditStyle);
+
     autoIrqRow->addWidget(autoIrqCheck);
     autoIrqRow->addWidget(autoIrqCombo);
     autoIrqRow->addWidget(new QLabel(tr("Every (ms):"), irqBox));
@@ -336,18 +491,24 @@ void HardwareWidget::setupUi()
     middleLayout->addWidget(irqBox, 1);
 
     // Memory Map Box
-    auto *mapBox = new QGroupBox(tr("Memory Map"), this);
+    auto *mapBox = new QGroupBox(tr("Memory Map"), contentWidget);
     auto *mapGrid = new QGridLayout(mapBox);
     mapGrid->setSpacing(4);
     QFont monoFont("Monospace", 8);
 
+    auto setupMapEdit = [&](QLineEdit *le) {
+        le->setFont(monoFont);
+        le->setMinimumWidth(74);
+        le->setMinimumHeight(26);
+        le->setAlignment(Qt::AlignCenter);
+        le->setStyleSheet(hexEditStyle);
+    };
+
     romMapCheck = new QCheckBox(tr("ROM:"), mapBox);
     romStartEdit = new QLineEdit("000000", mapBox);
-    romStartEdit->setFont(monoFont);
-    romStartEdit->setMaximumWidth(65);
+    setupMapEdit(romStartEdit);
     romEndEdit = new QLineEdit("001FFF", mapBox);
-    romEndEdit->setFont(monoFont);
-    romEndEdit->setMaximumWidth(65);
+    setupMapEdit(romEndEdit);
     mapGrid->addWidget(romMapCheck, 0, 0);
     mapGrid->addWidget(romStartEdit, 0, 1);
     mapGrid->addWidget(new QLabel("-", mapBox), 0, 2);
@@ -355,11 +516,9 @@ void HardwareWidget::setupUi()
 
     readMapCheck = new QCheckBox(tr("Read Only:"), mapBox);
     readStartEdit = new QLineEdit("002000", mapBox);
-    readStartEdit->setFont(monoFont);
-    readStartEdit->setMaximumWidth(65);
+    setupMapEdit(readStartEdit);
     readEndEdit = new QLineEdit("003FFF", mapBox);
-    readEndEdit->setFont(monoFont);
-    readEndEdit->setMaximumWidth(65);
+    setupMapEdit(readEndEdit);
     mapGrid->addWidget(readMapCheck, 0, 4);
     mapGrid->addWidget(readStartEdit, 0, 5);
     mapGrid->addWidget(new QLabel("-", mapBox), 0, 6);
@@ -367,11 +526,9 @@ void HardwareWidget::setupUi()
 
     protectedMapCheck = new QCheckBox(tr("Protected:"), mapBox);
     protectedStartEdit = new QLineEdit("004000", mapBox);
-    protectedStartEdit->setFont(monoFont);
-    protectedStartEdit->setMaximumWidth(65);
+    setupMapEdit(protectedStartEdit);
     protectedEndEdit = new QLineEdit("005FFF", mapBox);
-    protectedEndEdit->setFont(monoFont);
-    protectedEndEdit->setMaximumWidth(65);
+    setupMapEdit(protectedEndEdit);
     mapGrid->addWidget(protectedMapCheck, 1, 0);
     mapGrid->addWidget(protectedStartEdit, 1, 1);
     mapGrid->addWidget(new QLabel("-", mapBox), 1, 2);
@@ -379,11 +536,9 @@ void HardwareWidget::setupUi()
 
     invalidMapCheck = new QCheckBox(tr("Invalid:"), mapBox);
     invalidStartEdit = new QLineEdit("006000", mapBox);
-    invalidStartEdit->setFont(monoFont);
-    invalidStartEdit->setMaximumWidth(65);
+    setupMapEdit(invalidStartEdit);
     invalidEndEdit = new QLineEdit("007FFF", mapBox);
-    invalidEndEdit->setFont(monoFont);
-    invalidEndEdit->setMaximumWidth(65);
+    setupMapEdit(invalidEndEdit);
     mapGrid->addWidget(invalidMapCheck, 1, 4);
     mapGrid->addWidget(invalidStartEdit, 1, 5);
     mapGrid->addWidget(new QLabel("-", mapBox), 1, 6);
@@ -405,7 +560,7 @@ void HardwareWidget::setupUi()
     mainLayout->addLayout(middleLayout);
 
     // 3. 2D Graphics Canvas Box
-    auto *gfxBox = new QGroupBox(tr("2D Graphics Canvas (TRAP #15 Tasks 80..96)"), this);
+    auto *gfxBox = new QGroupBox(tr("2D Graphics Canvas (TRAP #15 Tasks 80..96)"), contentWidget);
     auto *gfxLayout = new QVBoxLayout(gfxBox);
 
     auto *gfxToolbar = new QHBoxLayout();
@@ -430,6 +585,9 @@ void HardwareWidget::setupUi()
     gfxLayout->addWidget(scrollArea);
 
     mainLayout->addWidget(gfxBox);
+
+    outerScrollArea->setWidget(contentWidget);
+    outerLayout->addWidget(outerScrollArea);
 }
 
 void HardwareWidget::triggerInterrupt(int level)

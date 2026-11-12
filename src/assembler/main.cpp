@@ -16,7 +16,7 @@ extern int errorCount;
 extern int warningCount;
 
 static void printUsage(const char* progName) {
-    std::cout << "EASy68K Assembler v5.16.1 for Linux\n"
+    std::cout << "EASy68K Assembler v" << EASY68K_VERSION_STRING << " for Linux\n"
               << "Usage: " << progName << " [options] <source.x68>\n\n"
               << "Options:\n"
               << "  -o <file>    Output S-record object file (default: <source_base>.s68)\n"
@@ -57,7 +57,7 @@ int main(int argc, char* argv[]) {
             printUsage(argv[0]);
             return 0;
         } else if (arg == "-v" || arg == "--version") {
-            std::cout << "EASy68K Assembler v5.16.1 (Linux Native)\n";
+            std::cout << "EASy68K Assembler v" << EASY68K_VERSION_STRING << " (Linux Native)\n";
             return 0;
         } else if (arg == "-b") {
             BITflag = true;

@@ -569,6 +569,7 @@ void Updater::downloadAndApplyUpdate(const ReleaseInfo &info)
         bool success = false;
         if (QFile::rename(appImagePath, backupPath)) {
             if (QFile::rename(downloadedFilePath, appImagePath) || QFile::copy(downloadedFilePath, appImagePath)) {
+                QFile::setPermissions(appImagePath, perms);
                 QFile::remove(backupPath);
                 QFile::remove(downloadedFilePath);
                 success = true;
@@ -634,9 +635,17 @@ void Updater::downloadAndApplyUpdate(const ReleaseInfo &info)
     if (installBtn && box.clickedButton() == installBtn) {
         QStringList args;
         if (isDeb) {
-            args << QStringLiteral("dpkg") << QStringLiteral("-i") << destPath;
+            if (QFile::exists(QStringLiteral("/usr/bin/apt-get"))) {
+                args << QStringLiteral("apt-get") << QStringLiteral("install") << QStringLiteral("-y") << destPath;
+            } else {
+                args << QStringLiteral("dpkg") << QStringLiteral("-i") << destPath;
+            }
         } else {
-            args << QStringLiteral("rpm") << QStringLiteral("-Uvh") << destPath;
+            if (QFile::exists(QStringLiteral("/usr/bin/dnf"))) {
+                args << QStringLiteral("dnf") << QStringLiteral("install") << QStringLiteral("-y") << destPath;
+            } else {
+                args << QStringLiteral("rpm") << QStringLiteral("-Uvh") << destPath;
+            }
         }
         QProcess::startDetached(QStringLiteral("pkexec"), args);
     } else if (box.clickedButton() == folderBtn) {

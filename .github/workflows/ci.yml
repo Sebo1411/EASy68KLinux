@@ -154,7 +154,7 @@ jobs:
         run: |
           VERSION=$(sed -n 's/^project(EASy68KLinux VERSION \([0-9.]*\).*/\1/p' CMakeLists.txt)
           chmod +x scripts/build_appimage.sh
-          ./scripts/build_appimage.sh build dist "${VERSION:-5.16.1}" Sebo1411 EASy68KLinux
+          ./scripts/build_appimage.sh build dist "${VERSION:-5.17.0}" Sebo1411 EASy68KLinux
 
       - name: Verify Automated APT & RPM Repository Generation
         run: |

@@ -7,9 +7,9 @@ on:
   workflow_dispatch:
     inputs:
       tag_name:
-        description: 'Tag name for release (e.g. v5.16.1)'
+        description: 'Tag name for release (e.g. v5.17.0)'
         required: false
-        default: 'v5.16.1'
+        default: 'v5.17.0'
 
 permissions:
   contents: write
@@ -72,13 +72,13 @@ jobs:
 
       - name: Build Standalone AppImage with zsync Delta Metadata
         run: |
-          TAG="${GITHUB_REF_NAME:-${{ inputs.tag_name }}}"
+          TAG="${{ inputs.tag_name || github.ref_name }}"
           VERSION="${TAG#v}"
           if [ -z "${VERSION}" ] || [ "${VERSION}" = "master" ] || [ "${VERSION}" = "main" ]; then
             VERSION=$(sed -n 's/^project(EASy68KLinux VERSION \([0-9.]*\).*/\1/p' CMakeLists.txt)
           fi
           chmod +x scripts/build_appimage.sh
-          ./scripts/build_appimage.sh build dist "${VERSION:-5.16.1}" Sebo1411 EASy68KLinux
+          ./scripts/build_appimage.sh build dist "${VERSION:-5.17.0}" Sebo1411 EASy68KLinux
 
       - name: Generate Checksums
         run: |
@@ -89,8 +89,8 @@ jobs:
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v3
         with:
-          tag_name: ${{ github.ref_name || inputs.tag_name }}
-          name: EASy68K Linux Native ${{ github.ref_name || inputs.tag_name }}
+          tag_name: ${{ inputs.tag_name || github.ref_name }}
+          name: EASy68K Linux Native ${{ inputs.tag_name || github.ref_name }}
           draft: false
           prerelease: false
           generate_release_notes: true
@@ -107,7 +107,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
-          git commit -m "chore(repo): update APT and RPM repositories for ${{ github.ref_name || inputs.tag_name }}"
+          git commit -m "chore(repo): update APT and RPM repositories for ${{ inputs.tag_name || github.ref_name }}"
           git push -f "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" gh-pages:gh-pages
           popd
         env:

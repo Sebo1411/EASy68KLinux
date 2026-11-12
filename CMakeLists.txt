@@ -1,9 +1,16 @@
 cmake_minimum_required(VERSION 3.16)
-project(EASy68KLinux VERSION 5.16.1 LANGUAGES CXX)
+project(EASy68KLinux VERSION 5.17.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
+
+add_compile_definitions(
+    EASY68K_VERSION_STRING="${PROJECT_VERSION}"
+    EASY68K_VERSION_MAJOR=${PROJECT_VERSION_MAJOR}
+    EASY68K_VERSION_MINOR=${PROJECT_VERSION_MINOR}
+    EASY68K_VERSION_PATCH=${PROJECT_VERSION_PATCH}
+)
 
 # Strict warnings as errors required by project policy
 add_compile_options(-Wall -Wextra -Werror -fPIC)
@@ -129,7 +136,6 @@ if(Qt6_FOUND)
     )
 
     add_library(easy68k_gui_core STATIC ${GUI_CORE_SOURCES})
-    target_compile_definitions(easy68k_gui_core PUBLIC EASY68K_VERSION_STRING="${PROJECT_VERSION}")
     target_include_directories(easy68k_gui_core PUBLIC src/gui src/simulator src/easybin)
     target_link_libraries(easy68k_gui_core PUBLIC easy68k_sim_core Qt6::Widgets Qt6::Gui Qt6::Core Qt6::Network)
     if(TARGET Qt6::Multimedia)
@@ -187,10 +193,10 @@ install(DIRECTORY docs/help/ DESTINATION share/doc/easy68k/help)
 set(CPACK_PACKAGE_NAME "easy68k-linux")
 set(CPACK_PACKAGE_VENDOR "EASy68K Project")
 set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "Motorola 68000 Assembler, Simulator & IDE for Linux")
-set(CPACK_PACKAGE_VERSION_MAJOR 5)
-set(CPACK_PACKAGE_VERSION_MINOR 16)
-set(CPACK_PACKAGE_VERSION_PATCH 1)
-set(CPACK_PACKAGE_VERSION "${CPACK_PACKAGE_VERSION_MAJOR}.${CPACK_PACKAGE_VERSION_MINOR}.${CPACK_PACKAGE_VERSION_PATCH}")
+set(CPACK_PACKAGE_VERSION_MAJOR ${PROJECT_VERSION_MAJOR})
+set(CPACK_PACKAGE_VERSION_MINOR ${PROJECT_VERSION_MINOR})
+set(CPACK_PACKAGE_VERSION_PATCH ${PROJECT_VERSION_PATCH})
+set(CPACK_PACKAGE_VERSION "${PROJECT_VERSION}")
 set(CPACK_RESOURCE_FILE_LICENSE "${CMAKE_CURRENT_SOURCE_DIR}/License.txt")
 set(CPACK_RESOURCE_FILE_README "${CMAKE_CURRENT_SOURCE_DIR}/README.md")
 

@@ -45,10 +45,10 @@ curl -fsSL https://sebo1411.github.io/EASy68KLinux/setup-rpm.sh | sudo bash
 ```
 
 ### 3. Portable AppImage + `AppImageUpdate` (`zsync`) & In-App GUI Updater
-Download `easy68k-linux-5.16.1-x86_64.AppImage` from [GitHub Releases](https://github.com/Sebo1411/EASy68KLinux/releases/latest):
+Download `easy68k-linux-5.17.0-x86_64.AppImage` from [GitHub Releases](https://github.com/Sebo1411/EASy68KLinux/releases/latest):
 ```bash
-chmod +x easy68k-linux-5.16.1-x86_64.AppImage
-./easy68k-linux-5.16.1-x86_64.AppImage
+chmod +x easy68k-linux-5.17.0-x86_64.AppImage
+./easy68k-linux-5.17.0-x86_64.AppImage
 ```
 - **In-App GUI Auto-Updater**: Open **Help -> Check for Updates...** inside `easy68k-gui` to verify `SHA256SUMS.txt`, download the newest release, atomically replace the `.AppImage` (or install `.deb`/`.rpm` via `pkexec`), and restart.
 - **`AppImageUpdate` (`zsync`)**: Every `.AppImage` embeds `gh-releases-zsync|Sebo1411|EASy68KLinux|latest|easy68k-linux-*x86_64.AppImage.zsync` metadata for binary delta updates with *AppImageUpdate*, *Gear Lever*, or *AppImageLauncher*.
@@ -57,7 +57,7 @@ chmod +x easy68k-linux-5.16.1-x86_64.AppImage
 
 ## Building from Source
 
-Requires a C++17 compiler (`g++` or `clang++`), CMake (>= 3.16), and Qt6 (`Core`, `Gui`, `Widgets`, `Network`, `Test`):
+Requires a C++17 compiler (`g++` or `clang++`), CMake (>= 3.16), and Qt6 (`Core`, `Gui`, `Widgets`, `Network`, `Test`, and `Multimedia` optional for TRAP #15 sound):
 
 ```bash
 mkdir -p build && cd build
@@ -136,7 +136,7 @@ cpack -G "TGZ;DEB;RPM"
 
 # Build standalone AppImage + .zsync metadata:
 cd ..
-./scripts/build_appimage.sh build dist 5.16.1 Sebo1411 EASy68KLinux
+./scripts/build_appimage.sh build dist 5.17.0 Sebo1411 EASy68KLinux
 
 # Generate static APT & RPM repository metadata:
 ./scripts/generate_repos.sh dist gh-pages-root

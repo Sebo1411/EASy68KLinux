@@ -10,7 +10,7 @@ class QNetworkAccessManager;
 class QWidget;
 
 #ifndef EASY68K_VERSION_STRING
-#define EASY68K_VERSION_STRING "5.16.1"
+#define EASY68K_VERSION_STRING "5.17.0"
 #endif
 
 struct ReleaseAsset {

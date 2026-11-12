@@ -35,8 +35,23 @@ typedef uint8_t byte;
 #endif
 
 // version info
-const char TITLE[] = "EASy68K Simulator v5.16.1"; // ***** change both *****
-const unsigned int VERSION =        0x00051001;    // ***** change both *****
+#ifndef EASY68K_VERSION_STRING
+#define EASY68K_VERSION_STRING "5.17.0"
+#endif
+#ifndef EASY68K_VERSION_MAJOR
+#define EASY68K_VERSION_MAJOR 5
+#endif
+#ifndef EASY68K_VERSION_MINOR
+#define EASY68K_VERSION_MINOR 17
+#endif
+#ifndef EASY68K_VERSION_PATCH
+#define EASY68K_VERSION_PATCH 0
+#endif
+
+const char TITLE[] = "EASy68K Simulator v" EASY68K_VERSION_STRING;
+const unsigned int VERSION = ((EASY68K_VERSION_MAJOR & 0xFFu) << 16) |
+                             ((EASY68K_VERSION_MINOR & 0xFFu) << 8) |
+                             (EASY68K_VERSION_PATCH & 0xFFu);
 
 // memory map types (bit flags which may be combined with OR logic)
 enum maptype {Invalid=0x01, Protected=0x02, Read=0x04, Rom=0x10};

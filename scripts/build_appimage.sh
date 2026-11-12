@@ -8,7 +8,7 @@ set -euo pipefail
 
 BUILD_DIR="${1:-build}"
 DIST_DIR="${2:-dist}"
-VERSION="${3:-5.16.1}"
+VERSION="${3:-5.17.0}"
 GITHUB_USER="${4:-Sebo1411}"
 GITHUB_REPO="${5:-EASy68KLinux}"
 
@@ -32,7 +32,7 @@ cp "${BUILD_DIR}/easy68k-sim" AppDir/usr/bin/
 cp "${BUILD_DIR}/easybin" AppDir/usr/bin/
 
 # 2. Bundle Qt6 shared libraries and essential Qt6 plugins
-ldd "${BUILD_DIR}/easy68k-gui" | awk '/=> \/.*libQt6|libicu|libdouble-conversion|libb2|libpcre2-16/ {print $3}' | xargs -r -I{} cp -L "{}" AppDir/usr/lib/
+ldd "${BUILD_DIR}/easy68k-gui" | awk '/=> \/.*libQt6|libicu|libdouble-conversion|libb2|libpcre2-16/ {print $3}' | sort -u | xargs -r -I{} cp -L "{}" AppDir/usr/lib/
 for qt_plugins_root in /usr/lib/x86_64-linux-gnu/qt6/plugins /usr/lib64/qt6/plugins; do
   if [ -d "$qt_plugins_root" ]; then
     for sub in platforms tls imageformats xcbglintegrations multimedia; do
@@ -43,6 +43,12 @@ for qt_plugins_root in /usr/lib/x86_64-linux-gnu/qt6/plugins /usr/lib64/qt6/plug
     done
   fi
 done
+# Also bundle Qt6 shared libraries required only by plugins (e.g. libQt6XcbQpa.so.6)
+while IFS= read -r lib; do
+  if [ -n "$lib" ] && [ -f "$lib" ] && [ ! -e "AppDir/usr/lib/$(basename "$lib")" ]; then
+    cp -L "$lib" AppDir/usr/lib/
+  fi
+done < <(find AppDir/usr/plugins -type f -name '*.so' -exec ldd {} + 2>/dev/null | awk '/=> \/.*libQt6/ {print $3}' | sort -u)
 
 # 3. Copy desktop integration, AppStream metainfo, and icons
 cp desktop/easy68k.desktop AppDir/

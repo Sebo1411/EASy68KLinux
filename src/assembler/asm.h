@@ -32,8 +32,12 @@ void REMOVECR(char *line);
 #define isTerm(c)   (c == ',' || c == '/' || c == '-' || isspace((unsigned char)c) || !c || c == '{')
 #define isRegNum(c) ((c >= '0') && (c <= '7'))
 
-#define VERSION "5.16.01"
-#define TITLE "EASy68K Assembler v5.16.01"
+#ifndef EASY68K_VERSION_STRING
+#define EASY68K_VERSION_STRING "5.17.0"
+#endif
+
+#define VERSION EASY68K_VERSION_STRING
+#define TITLE "EASy68K Assembler v" EASY68K_VERSION_STRING
 
 /* Status values */
 #define OK                    0x00

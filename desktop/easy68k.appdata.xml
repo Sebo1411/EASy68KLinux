@@ -30,6 +30,11 @@
     <binary>easybin</binary>
   </provides>
   <releases>
+    <release version="5.17.0" date="2026-11-13">
+      <description>
+        <p>Release 5.17.0 adds interactive peripherals (graphics canvas, sound, file I/O), IDE find/replace and watchpoints fixes, and packaging improvements.</p>
+      </description>
+    </release>
     <release version="5.16.1" date="2026-11-11">
       <description>
         <p>Release 5.16.1 includes the native auto-updater and system repository integration.</p>

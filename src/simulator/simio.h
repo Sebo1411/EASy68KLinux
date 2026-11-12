@@ -59,30 +59,18 @@ public:
     virtual void controlSoundDX(int control, int waveIndex, short *result) { (void)control; (void)waveIndex; if (result) *result = -1; }
     virtual void setupWindow() {}
     virtual void FormPaint(void*) {}
-    virtual void closeNetConnection(int closeIP, int *result) { (void)closeIP; if (result) *result = -1; }
-    virtual void createNetClient(int settings, char *server, int *result) { (void)settings; (void)server; if (result) *result = -1; }
-    virtual void createNetServer(int settings, int *result) { (void)settings; if (result) *result = -1; }
-    virtual void getLocalIP(char *localIP, int *result) { (void)localIP; if (result) *result = -1; }
-    virtual void receiveNet(int settings, char *buffer, int *count, char *senderIP, int *result) {
-        (void)settings; (void)buffer; (void)count; (void)senderIP; if (result) *result = -1;
-    }
-    virtual void receivePortNet(long *D0, long *D1, char *buffer, char *senderIP) {
-        (void)D0; (void)D1; (void)buffer; (void)senderIP;
-    }
-    virtual void sendNet(int settings, char *data, char *remoteIP, int *count, int *result) {
-        (void)settings; (void)data; (void)remoteIP; (void)count; if (result) *result = -1;
-    }
-    virtual void sendPortNet(long *D0, long *D1, char *data, char *remoteIP) {
-        (void)D0; (void)D1; (void)data; (void)remoteIP;
-    }
-    virtual void initComm(int cid, char *portName, short *result) { (void)cid; (void)portName; if (result) *result = -1; }
-    virtual void readComm(int cid, unsigned char *n, char *str, short *result) {
-        (void)cid; (void)n; (void)str; if (result) *result = -1;
-    }
-    virtual void sendComm(int cid, unsigned char *n, char *str, short *result) {
-        (void)cid; (void)n; (void)str; if (result) *result = -1;
-    }
-    virtual void setCommParams(int cid, int settings, short *result) { (void)cid; (void)settings; if (result) *result = -1; }
+    virtual void closeNetConnection(int closeIP, int *result);
+    virtual void createNetClient(int settings, char *server, int *result);
+    virtual void createNetServer(int settings, int *result);
+    virtual void getLocalIP(char *localIP, int *result);
+    virtual void receiveNet(int settings, char *buffer, int *count, char *senderIP, int *result);
+    virtual void receivePortNet(long *D0, long *D1, char *buffer, char *senderIP);
+    virtual void sendNet(int settings, char *data, char *remoteIP, int *count, int *result);
+    virtual void sendPortNet(long *D0, long *D1, char *data, char *remoteIP);
+    virtual void initComm(int cid, char *portName, short *result);
+    virtual void readComm(int cid, unsigned char *n, char *str, short *result);
+    virtual void sendComm(int cid, unsigned char *n, char *str, short *result);
+    virtual void setCommParams(int cid, int settings, short *result);
     virtual void ResetSounds() {}
 
     bool fullScreen = false;

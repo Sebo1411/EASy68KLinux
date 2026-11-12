@@ -248,11 +248,15 @@ public:
     int getAutoTraceInterval() const { return autoTraceInterval; }
 
     void provideInput(const QString &input = QString());
+    void setInputWaiting(bool waiting);
     void triggerIRQ(int level);
     void executeBatch();
     void autoTraceStep();
 
     void clearCycles();
+    void setExceptionsEnabled(bool enabled);
+    bool isExceptionsEnabled() const;
+    void notifyBreakpointsChanged();
 
     bool isRunning() const { return running; }
     bool isLoaded() const { return programLoaded; }
@@ -307,7 +311,9 @@ private:
     QTimer *runTimer = nullptr;
     QTimer *autoTraceTimer = nullptr;
     int autoTraceInterval = 200;
-    const int BATCH_SIZE = 5000;
+    bool m_inExecutionBatch = false;
+    bool m_pausedForInput = false;
+    const int BATCH_SIZE = 200000;
 };
 
 #endif // SIMULATORMANAGER_H

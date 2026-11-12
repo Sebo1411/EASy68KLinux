@@ -57,7 +57,7 @@ cat << EOF > "${OUT_DIR}/setup-rpm.sh"
 #!/usr/bin/env bash
 set -euo pipefail
 echo "Configuring EASy68K Linux RPM repository for automatic updates..."
-cat << 'REPO_EOF' | sudo tee /etc/yum.repos.d/easy68k-linux.repo >/dev/null
+cat << REPO_EOF | sudo tee /etc/yum.repos.d/easy68k-linux.repo >/dev/null
 [easy68k-linux]
 name=EASy68K Linux Native Official Repository
 baseurl=${REPO_URL}/rpm

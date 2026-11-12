@@ -9,6 +9,8 @@
 #include <QFileDialog>
 #include <QMessageBox>
 #include <QFont>
+#include <QPoint>
+#include <deque>
 #include "../simulator/extern.h"
 #include "../simulator/proto.h"
 
@@ -16,6 +18,95 @@ extern int seg7loc, LEDloc, switchLoc, pbLoc;
 extern bool ROMMap, ReadMap, ProtectedMap, InvalidMap;
 extern int ROMStart, ROMEnd, ReadStart, ReadEnd;
 extern int ProtectedStart, ProtectedEnd, InvalidStart, InvalidEnd;
+
+namespace {
+
+inline QRgb applyRasterMode(int mode, QRgb bgRgb, QRgb drawRgb)
+{
+    uint32_t bg = bgRgb & 0x00FFFFFFU;
+    uint32_t draw = drawRgb & 0x00FFFFFFU;
+    uint32_t res = draw;
+    switch (mode) {
+    case 0:  res = 0x000000U; break;
+    case 1:  res = 0xFFFFFFU; break;
+    case 2:  res = bg; break;
+    case 3:  res = (~bg) & 0xFFFFFFU; break;
+    case 4:  res = draw; break;
+    case 5:  res = (~draw) & 0xFFFFFFU; break;
+    case 6:  res = ((~bg) | draw) & 0xFFFFFFU; break;
+    case 7:  res = ((~bg) & draw) & 0xFFFFFFU; break;
+    case 8:  res = (bg | (~draw)) & 0xFFFFFFU; break;
+    case 9:  res = (bg & (~draw)) & 0xFFFFFFU; break;
+    case 10: res = (bg | draw) & 0xFFFFFFU; break;
+    case 11: res = (~(bg | draw)) & 0xFFFFFFU; break;
+    case 12: res = (bg & draw) & 0xFFFFFFU; break;
+    case 13: res = (~(bg & draw)) & 0xFFFFFFU; break;
+    case 14: res = (bg ^ draw) & 0xFFFFFFU; break;
+    case 15: res = (~(bg ^ draw)) & 0xFFFFFFU; break;
+    default: res = draw; break;
+    }
+    return 0xFF000000U | res;
+}
+
+void triggerSimIrqLevel(byte level)
+{
+    if (level >= 1 && level <= 7) {
+        irq |= (1 << (level - 1));
+        if (stopInstruction) {
+            irqHandler();
+        }
+    }
+}
+
+void updateGlobalMouseSnapshot(const QMouseEvent *e, bool isPress, bool isRelease, bool isDbl)
+{
+    int x = static_cast<int>(e->position().x());
+    int y = static_cast<int>(e->position().y());
+    Qt::MouseButtons btns = e->buttons();
+    Qt::KeyboardModifiers mods = e->modifiers();
+
+    bool left = (btns & Qt::LeftButton) != 0 || (isPress && e->button() == Qt::LeftButton);
+    bool right = (btns & Qt::RightButton) != 0 || (isPress && e->button() == Qt::RightButton);
+    bool mid = (btns & Qt::MiddleButton) != 0 || (isPress && e->button() == Qt::MiddleButton);
+    bool sh = (mods & Qt::ShiftModifier) != 0;
+    bool al = (mods & Qt::AltModifier) != 0;
+    bool ct = (mods & Qt::ControlModifier) != 0;
+
+    mouseX = x;
+    mouseY = y;
+    mouseLeft = left;
+    mouseRight = right;
+    mouseMiddle = mid;
+    mouseDouble = isDbl;
+    keyShift = sh;
+    keyAlt = al;
+    keyCtrl = ct;
+
+    if (isPress) {
+        mouseXDown = x;
+        mouseYDown = y;
+        mouseLeftDown = (e->button() == Qt::LeftButton) || left;
+        mouseRightDown = (e->button() == Qt::RightButton) || right;
+        mouseMiddleDown = (e->button() == Qt::MiddleButton) || mid;
+        mouseDoubleDown = isDbl;
+        keyShiftDown = sh;
+        keyAltDown = al;
+        keyCtrlDown = ct;
+    }
+    if (isRelease) {
+        mouseXUp = x;
+        mouseYUp = y;
+        mouseLeftUp = (e->button() == Qt::LeftButton);
+        mouseRightUp = (e->button() == Qt::RightButton);
+        mouseMiddleUp = (e->button() == Qt::MiddleButton);
+        mouseDoubleUp = false;
+        keyShiftUp = sh;
+        keyAltUp = al;
+        keyCtrlUp = ct;
+    }
+}
+
+} // namespace
 
 static inline QColor decodeColor(int c) {
     // 68000 TRAP #15 color format is $00BBGGRR
@@ -233,6 +324,8 @@ HardwareWidget::CanvasView::CanvasView(HardwareWidget *owner, QWidget *parent)
 {
     setFixedSize(640, 480);
     setAutoFillBackground(true);
+    setMouseTracking(true);
+    setFocusPolicy(Qt::StrongFocus);
 }
 
 void HardwareWidget::CanvasView::paintEvent(QPaintEvent *)
@@ -242,13 +335,58 @@ void HardwareWidget::CanvasView::paintEvent(QPaintEvent *)
     p.drawImage(0, 0, ownerWidget->canvas);
 }
 
+void HardwareWidget::CanvasView::mousePressEvent(QMouseEvent *event)
+{
+    setFocus(Qt::MouseFocusReason);
+    updateGlobalMouseSnapshot(event, true, false, false);
+    triggerSimIrqLevel(mouseDownIRQ);
+    event->accept();
+}
+
+void HardwareWidget::CanvasView::mouseReleaseEvent(QMouseEvent *event)
+{
+    updateGlobalMouseSnapshot(event, false, true, false);
+    triggerSimIrqLevel(mouseUpIRQ);
+    event->accept();
+}
+
+void HardwareWidget::CanvasView::mouseMoveEvent(QMouseEvent *event)
+{
+    updateGlobalMouseSnapshot(event, false, false, false);
+    triggerSimIrqLevel(mouseMoveIRQ);
+    event->accept();
+}
+
+void HardwareWidget::CanvasView::mouseDoubleClickEvent(QMouseEvent *event)
+{
+    setFocus(Qt::MouseFocusReason);
+    updateGlobalMouseSnapshot(event, true, false, true);
+    triggerSimIrqLevel(mouseDownIRQ);
+    event->accept();
+}
+
+void HardwareWidget::CanvasView::keyPressEvent(QKeyEvent *event)
+{
+    emit ownerWidget->canvasKeyEvent(event, true);
+    event->accept();
+}
+
+void HardwareWidget::CanvasView::keyReleaseEvent(QKeyEvent *event)
+{
+    emit ownerWidget->canvasKeyEvent(event, false);
+    event->accept();
+}
+
 // -----------------------------------------------------------------------------
 // HardwareWidget
 // -----------------------------------------------------------------------------
 HardwareWidget::HardwareWidget(QWidget *parent)
-    : QWidget(parent), canvas(640, 480, QImage::Format_ARGB32_Premultiplied)
+    : QWidget(parent),
+      canvas(640, 480, QImage::Format_ARGB32_Premultiplied),
+      backBuffer(640, 480, QImage::Format_ARGB32_Premultiplied)
 {
     canvas.fill(Qt::black);
+    backBuffer.fill(Qt::black);
     setupUi();
     resetHardware();
 }
@@ -564,14 +702,14 @@ void HardwareWidget::setupUi()
     auto *gfxLayout = new QVBoxLayout(gfxBox);
 
     auto *gfxToolbar = new QHBoxLayout();
-    auto *sizeLabel = new QLabel(tr("Resolution: 640 x 480"), gfxBox);
+    canvasSizeLabel = new QLabel(tr("Resolution: 640 x 480"), gfxBox);
     auto *clearBtn = new QPushButton(tr("Clear Canvas"), gfxBox);
     auto *saveBtn = new QPushButton(tr("Save Image..."), gfxBox);
 
     connect(clearBtn, &QPushButton::clicked, this, &HardwareWidget::onClearCanvasClicked);
     connect(saveBtn, &QPushButton::clicked, this, &HardwareWidget::onSaveCanvasClicked);
 
-    gfxToolbar->addWidget(sizeLabel);
+    gfxToolbar->addWidget(canvasSizeLabel);
     gfxToolbar->addStretch();
     gfxToolbar->addWidget(clearBtn);
     gfxToolbar->addWidget(saveBtn);
@@ -757,6 +895,35 @@ void HardwareWidget::onSaveCanvasClicked()
 // -----------------------------------------------------------------------------
 // Graphics API
 // -----------------------------------------------------------------------------
+QImage& HardwareWidget::activeCanvas()
+{
+    return doubleBuffered ? backBuffer : canvas;
+}
+
+void HardwareWidget::notifyCanvasChanged()
+{
+    if (!doubleBuffered && canvasView) {
+        canvasView->update();
+    }
+}
+
+void HardwareWidget::commitGraphicsDraw(const QImage *overlay, const QColor & /* drawCol */)
+{
+    if (!overlay) return;
+    QImage &dst = activeCanvas();
+    const int w = std::min(dst.width(), overlay->width());
+    const int h = std::min(dst.height(), overlay->height());
+    for (int y = 0; y < h; ++y) {
+        const QRgb *srcLine = reinterpret_cast<const QRgb*>(overlay->constScanLine(y));
+        QRgb *dstLine = reinterpret_cast<QRgb*>(dst.scanLine(y));
+        for (int x = 0; x < w; ++x) {
+            if (qAlpha(srcLine[x]) > 0) {
+                dstLine[x] = applyRasterMode(currentDrawingMode, dstLine[x], srcLine[x]);
+            }
+        }
+    }
+}
+
 void HardwareWidget::setLineColor(int c)
 {
     QMutexLocker locker(&graphicsMutex);
@@ -778,17 +945,20 @@ void HardwareWidget::setPenWidth(int w)
 void HardwareWidget::drawPixel(int x, int y)
 {
     QMutexLocker locker(&graphicsMutex);
-    if (x >= 0 && x < canvas.width() && y >= 0 && y < canvas.height()) {
-        canvas.setPixelColor(x, y, currentLineColor);
+    QImage &dst = activeCanvas();
+    if (x >= 0 && x < dst.width() && y >= 0 && y < dst.height()) {
+        // Task 82 draws pixel in pen color; drawing mode is ignored per graphics.htm
+        dst.setPixelColor(x, y, currentLineColor);
     }
-    canvasView->update();
+    notifyCanvasChanged();
 }
 
 int HardwareWidget::getPixel(int x, int y)
 {
     QMutexLocker locker(&graphicsMutex);
-    if (x >= 0 && x < canvas.width() && y >= 0 && y < canvas.height()) {
-        return encodeColor(canvas.pixelColor(x, y));
+    const QImage &src = activeCanvas();
+    if (x >= 0 && x < src.width() && y >= 0 && y < src.height()) {
+        return encodeColor(src.pixelColor(x, y));
     }
     return 0;
 }
@@ -796,23 +966,57 @@ int HardwareWidget::getPixel(int x, int y)
 void HardwareWidget::line(int x1, int y1, int x2, int y2)
 {
     QMutexLocker locker(&graphicsMutex);
-    QPainter p(&canvas);
-    p.setPen(QPen(currentLineColor, currentPenWidth));
-    p.drawLine(x1, y1, x2, y2);
     currentX = static_cast<short>(x2);
     currentY = static_cast<short>(y2);
-    canvasView->update();
+    if (currentDrawingMode == 2) return;
+
+    QColor penCol = currentLineColor;
+    if (currentDrawingMode == 0) penCol = Qt::black;
+    else if (currentDrawingMode == 1) penCol = Qt::white;
+
+    QImage &dst = activeCanvas();
+    if (currentDrawingMode == 0 || currentDrawingMode == 1 || currentDrawingMode == 4) {
+        QPainter p(&dst);
+        p.setPen(QPen(penCol, currentPenWidth));
+        p.drawLine(x1, y1, x2, y2);
+    } else {
+        QImage overlay(dst.size(), QImage::Format_ARGB32);
+        overlay.fill(Qt::transparent);
+        QPainter p(&overlay);
+        p.setPen(QPen(currentLineColor, currentPenWidth));
+        p.drawLine(x1, y1, x2, y2);
+        commitGraphicsDraw(&overlay, currentLineColor);
+    }
+    notifyCanvasChanged();
 }
 
 void HardwareWidget::lineTo(int x, int y)
 {
     QMutexLocker locker(&graphicsMutex);
-    QPainter p(&canvas);
-    p.setPen(QPen(currentLineColor, currentPenWidth));
-    p.drawLine(currentX, currentY, x, y);
+    int x1 = currentX;
+    int y1 = currentY;
     currentX = static_cast<short>(x);
     currentY = static_cast<short>(y);
-    canvasView->update();
+    if (currentDrawingMode == 2) return;
+
+    QColor penCol = currentLineColor;
+    if (currentDrawingMode == 0) penCol = Qt::black;
+    else if (currentDrawingMode == 1) penCol = Qt::white;
+
+    QImage &dst = activeCanvas();
+    if (currentDrawingMode == 0 || currentDrawingMode == 1 || currentDrawingMode == 4) {
+        QPainter p(&dst);
+        p.setPen(QPen(penCol, currentPenWidth));
+        p.drawLine(x1, y1, x, y);
+    } else {
+        QImage overlay(dst.size(), QImage::Format_ARGB32);
+        overlay.fill(Qt::transparent);
+        QPainter p(&overlay);
+        p.setPen(QPen(currentLineColor, currentPenWidth));
+        p.drawLine(x1, y1, x, y);
+        commitGraphicsDraw(&overlay, currentLineColor);
+    }
+    notifyCanvasChanged();
 }
 
 void HardwareWidget::moveTo(int x, int y)
@@ -832,58 +1036,233 @@ void HardwareWidget::getXY(short *x, short *y)
 void HardwareWidget::rectangle(int x1, int y1, int x2, int y2)
 {
     QMutexLocker locker(&graphicsMutex);
-    QPainter p(&canvas);
-    p.setPen(QPen(currentLineColor, currentPenWidth));
-    p.setBrush(currentFillColor);
-    p.drawRect(QRect(QPoint(x1, y1), QPoint(x2, y2)));
-    canvasView->update();
+    if (currentDrawingMode == 2) return;
+
+    QColor penCol = currentLineColor;
+    QColor fillCol = currentFillColor;
+    if (currentDrawingMode == 0) { penCol = Qt::black; fillCol = Qt::black; }
+    else if (currentDrawingMode == 1) { penCol = Qt::white; fillCol = Qt::white; }
+
+    QImage &dst = activeCanvas();
+    QRect r = QRect(QPoint(x1, y1), QPoint(x2, y2)).normalized();
+    if (currentDrawingMode == 0 || currentDrawingMode == 1 || currentDrawingMode == 4) {
+        QPainter p(&dst);
+        p.setPen(QPen(penCol, currentPenWidth));
+        p.setBrush(fillCol);
+        p.drawRect(r);
+    } else {
+        QImage overlay(dst.size(), QImage::Format_ARGB32);
+        overlay.fill(Qt::transparent);
+        QPainter p(&overlay);
+        p.setPen(QPen(currentLineColor, currentPenWidth));
+        p.setBrush(currentFillColor);
+        p.drawRect(r);
+        commitGraphicsDraw(&overlay, currentLineColor);
+    }
+    notifyCanvasChanged();
 }
 
 void HardwareWidget::ellipse(int x1, int y1, int x2, int y2)
 {
     QMutexLocker locker(&graphicsMutex);
-    QPainter p(&canvas);
-    p.setPen(QPen(currentLineColor, currentPenWidth));
-    p.setBrush(currentFillColor);
-    p.drawEllipse(QRect(QPoint(x1, y1), QPoint(x2, y2)));
-    canvasView->update();
+    if (currentDrawingMode == 2) return;
+
+    QColor penCol = currentLineColor;
+    QColor fillCol = currentFillColor;
+    if (currentDrawingMode == 0) { penCol = Qt::black; fillCol = Qt::black; }
+    else if (currentDrawingMode == 1) { penCol = Qt::white; fillCol = Qt::white; }
+
+    QImage &dst = activeCanvas();
+    QRect r = QRect(QPoint(x1, y1), QPoint(x2, y2)).normalized();
+    if (currentDrawingMode == 0 || currentDrawingMode == 1 || currentDrawingMode == 4) {
+        QPainter p(&dst);
+        p.setPen(QPen(penCol, currentPenWidth));
+        p.setBrush(fillCol);
+        p.drawEllipse(r);
+    } else {
+        QImage overlay(dst.size(), QImage::Format_ARGB32);
+        overlay.fill(Qt::transparent);
+        QPainter p(&overlay);
+        p.setPen(QPen(currentLineColor, currentPenWidth));
+        p.setBrush(currentFillColor);
+        p.drawEllipse(r);
+        commitGraphicsDraw(&overlay, currentLineColor);
+    }
+    notifyCanvasChanged();
+}
+
+void HardwareWidget::floodFill(int x1, int y1)
+{
+    QMutexLocker locker(&graphicsMutex);
+    if (currentDrawingMode == 2) return;
+    QImage &dst = activeCanvas();
+    const int w = dst.width();
+    const int h = dst.height();
+    if (x1 < 0 || x1 >= w || y1 < 0 || y1 >= h) return;
+
+    QColor fillCol = currentFillColor;
+    if (currentDrawingMode == 0) fillCol = Qt::black;
+    else if (currentDrawingMode == 1) fillCol = Qt::white;
+
+    QRgb targetRgb = dst.pixel(x1, y1);
+    QRgb fillRgb = applyRasterMode(currentDrawingMode, targetRgb, fillCol.rgb());
+    if ((targetRgb & 0x00FFFFFFU) == (fillRgb & 0x00FFFFFFU)) {
+        return;
+    }
+
+    std::deque<QPoint> q;
+    q.emplace_back(x1, y1);
+    while (!q.empty()) {
+        QPoint pt = q.front();
+        q.pop_front();
+        int px = pt.x();
+        int py = pt.y();
+        if (px < 0 || px >= w || py < 0 || py >= h) continue;
+        if ((dst.pixel(px, py) & 0x00FFFFFFU) != (targetRgb & 0x00FFFFFFU)) continue;
+
+        int lx = px;
+        while (lx > 0 && (dst.pixel(lx - 1, py) & 0x00FFFFFFU) == (targetRgb & 0x00FFFFFFU)) {
+            --lx;
+        }
+        int rx = px;
+        while (rx + 1 < w && (dst.pixel(rx + 1, py) & 0x00FFFFFFU) == (targetRgb & 0x00FFFFFFU)) {
+            ++rx;
+        }
+
+        QRgb *row = reinterpret_cast<QRgb*>(dst.scanLine(py));
+        for (int x = lx; x <= rx; ++x) {
+            row[x] = fillRgb;
+            if (py > 0 && (dst.pixel(x, py - 1) & 0x00FFFFFFU) == (targetRgb & 0x00FFFFFFU)) {
+                q.emplace_back(x, py - 1);
+            }
+            if (py + 1 < h && (dst.pixel(x, py + 1) & 0x00FFFFFFU) == (targetRgb & 0x00FFFFFFU)) {
+                q.emplace_back(x, py + 1);
+            }
+        }
+    }
+    notifyCanvasChanged();
 }
 
 void HardwareWidget::unfilledRectangle(int x1, int y1, int x2, int y2)
 {
     QMutexLocker locker(&graphicsMutex);
-    QPainter p(&canvas);
-    p.setPen(QPen(currentLineColor, currentPenWidth));
-    p.setBrush(Qt::NoBrush);
-    p.drawRect(QRect(QPoint(x1, y1), QPoint(x2, y2)));
-    canvasView->update();
+    if (currentDrawingMode == 2) return;
+
+    QColor penCol = currentLineColor;
+    if (currentDrawingMode == 0) penCol = Qt::black;
+    else if (currentDrawingMode == 1) penCol = Qt::white;
+
+    QImage &dst = activeCanvas();
+    QRect r = QRect(QPoint(x1, y1), QPoint(x2, y2)).normalized();
+    if (currentDrawingMode == 0 || currentDrawingMode == 1 || currentDrawingMode == 4) {
+        QPainter p(&dst);
+        p.setPen(QPen(penCol, currentPenWidth));
+        p.setBrush(Qt::NoBrush);
+        p.drawRect(r);
+    } else {
+        QImage overlay(dst.size(), QImage::Format_ARGB32);
+        overlay.fill(Qt::transparent);
+        QPainter p(&overlay);
+        p.setPen(QPen(currentLineColor, currentPenWidth));
+        p.setBrush(Qt::NoBrush);
+        p.drawRect(r);
+        commitGraphicsDraw(&overlay, currentLineColor);
+    }
+    notifyCanvasChanged();
 }
 
 void HardwareWidget::unfilledEllipse(int x1, int y1, int x2, int y2)
 {
     QMutexLocker locker(&graphicsMutex);
-    QPainter p(&canvas);
-    p.setPen(QPen(currentLineColor, currentPenWidth));
-    p.setBrush(Qt::NoBrush);
-    p.drawEllipse(QRect(QPoint(x1, y1), QPoint(x2, y2)));
+    if (currentDrawingMode == 2) return;
+
+    QColor penCol = currentLineColor;
+    if (currentDrawingMode == 0) penCol = Qt::black;
+    else if (currentDrawingMode == 1) penCol = Qt::white;
+
+    QImage &dst = activeCanvas();
+    QRect r = QRect(QPoint(x1, y1), QPoint(x2, y2)).normalized();
+    if (currentDrawingMode == 0 || currentDrawingMode == 1 || currentDrawingMode == 4) {
+        QPainter p(&dst);
+        p.setPen(QPen(penCol, currentPenWidth));
+        p.setBrush(Qt::NoBrush);
+        p.drawEllipse(r);
+    } else {
+        QImage overlay(dst.size(), QImage::Format_ARGB32);
+        overlay.fill(Qt::transparent);
+        QPainter p(&overlay);
+        p.setPen(QPen(currentLineColor, currentPenWidth));
+        p.setBrush(Qt::NoBrush);
+        p.drawEllipse(r);
+        commitGraphicsDraw(&overlay, currentLineColor);
+    }
+    notifyCanvasChanged();
+}
+
+void HardwareWidget::setDrawingMode(int mode)
+{
+    QMutexLocker locker(&graphicsMutex);
+    if (mode >= 0 && mode <= 15) {
+        currentDrawingMode = mode;
+    } else if (mode == 16) {
+        if (doubleBuffered) {
+            canvas = backBuffer;
+            doubleBuffered = false;
+            canvasView->update();
+        }
+    } else if (mode == 17) {
+        if (!doubleBuffered) {
+            backBuffer = canvas;
+            doubleBuffered = true;
+        }
+    }
+}
+
+void HardwareWidget::repaintCanvas()
+{
+    QMutexLocker locker(&graphicsMutex);
+    if (doubleBuffered) {
+        canvas = backBuffer;
+    }
     canvasView->update();
 }
 
 void HardwareWidget::drawText(const std::string& str, int x, int y)
 {
     QMutexLocker locker(&graphicsMutex);
-    QPainter p(&canvas);
-    p.setPen(currentLineColor);
+    if (currentDrawingMode == 2) return;
+
+    QColor penCol = currentLineColor;
+    if (currentDrawingMode == 0) penCol = Qt::black;
+    else if (currentDrawingMode == 1) penCol = Qt::white;
+
+    QImage &dst = activeCanvas();
     QFont font("Monospace", 10);
-    p.setFont(font);
-    p.drawText(x, y, QString::fromStdString(str));
-    canvasView->update();
+    QFontMetrics fm(font);
+    int baselineY = y + fm.ascent();
+
+    if (currentDrawingMode == 0 || currentDrawingMode == 1 || currentDrawingMode == 4) {
+        QPainter p(&dst);
+        p.setPen(penCol);
+        p.setFont(font);
+        p.drawText(x, baselineY, QString::fromStdString(str));
+    } else {
+        QImage overlay(dst.size(), QImage::Format_ARGB32);
+        overlay.fill(Qt::transparent);
+        QPainter p(&overlay);
+        p.setPen(currentLineColor);
+        p.setFont(font);
+        p.drawText(x, baselineY, QString::fromStdString(str));
+        commitGraphicsDraw(&overlay, currentLineColor);
+    }
+    notifyCanvasChanged();
 }
 
 void HardwareWidget::clearCanvas()
 {
     QMutexLocker locker(&graphicsMutex);
     canvas.fill(Qt::black);
+    backBuffer.fill(Qt::black);
     currentX = 0;
     currentY = 0;
     canvasView->update();
@@ -899,10 +1278,20 @@ void HardwareWidget::getWindowSize(unsigned short &w, unsigned short &h)
 void HardwareWidget::setWindowSize(unsigned short w, unsigned short h)
 {
     QMutexLocker locker(&graphicsMutex);
-    if (w > 0 && h > 0) {
-        canvas = canvas.scaled(w, h, Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
-        canvasView->setFixedSize(w, h);
-        canvasView->update();
+    unsigned short targetW = (w == 0 && h == 0) ? 640 : w;
+    unsigned short targetH = (w == 0 && h == 0) ? 480 : h;
+    if (targetW > 0 && targetH > 0) {
+        if (targetW != canvas.width() || targetH != canvas.height()) {
+            canvas = QImage(targetW, targetH, QImage::Format_ARGB32_Premultiplied);
+            canvas.fill(Qt::black);
+            backBuffer = QImage(targetW, targetH, QImage::Format_ARGB32_Premultiplied);
+            backBuffer.fill(Qt::black);
+            canvasView->setFixedSize(targetW, targetH);
+            if (canvasSizeLabel) {
+                canvasSizeLabel->setText(tr("Resolution: %1 x %2").arg(targetW).arg(targetH));
+            }
+            canvasView->update();
+        }
     }
 }
 

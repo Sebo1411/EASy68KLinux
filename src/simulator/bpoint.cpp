@@ -20,9 +20,16 @@ bool isEnabled(); void isEnabled(bool);
 #include "bpoint.h"
 
 // Default constructor
-BPoint::BPoint() {
-        isEnab = false;
-}
+BPoint::BPoint()
+    : id(0),
+      type(PC_REG_TYPE),
+      typeId(PC_TYPE_ID),
+      op(EQUAL_OP),
+      value(0),
+      readWrite(NA_TYPE),
+      size(LONG_SIZE),
+      isEnab(false)
+{}
 
 // Destructor
 BPoint::~BPoint() {}
@@ -122,12 +129,16 @@ bool BPoint::isBreak() {
                 // Get the effective address for one of the registers.
                 if(typeId >= D0_TYPE_ID && typeId <= D7_TYPE_ID)
                         curEA = &D[typeId];
+                else if (typeId >= A0_TYPE_ID && typeId <= A7_TYPE_ID)
+                        curEA = &A[a_reg(static_cast<int>(typeId - A0_TYPE_ID))];
                 else
-                        curEA = &A[typeId - A0_TYPE_ID];
+                        return false;
         }
         else if(type == ADDR_TYPE) {
+                if (!memory) return false;
                 // Get the effective address for a memory location.
-                curEA = (long *)&memory[typeId];
+                uint32_t maskedAddr = static_cast<uint32_t>(typeId) & ADDRMASK;
+                curEA = reinterpret_cast<long *>(&memory[maskedAddr]);
 
                 // Is the readWrite condition met?
                 bool write = false;
@@ -137,7 +148,7 @@ bool BPoint::isBreak() {
                 // true, or neither will be true (not both true).
                 if(bpRead && curEA == readEA)
                         read = true;
-                else if(bpWrite && curEA == writeEA)
+                if(bpWrite && curEA == writeEA)
                         write = true;
 
                 switch(readWrite) {
@@ -174,24 +185,29 @@ bool BPoint::isBreak() {
                 valueFound = PC & curSize;
         }
         // Compute the value for effective addresses (registers or memory)
-        else {
+        else if (curEA != nullptr) {
                 value_of(curEA, &valueFound, curSize);
+        } else {
+                return false;
         }
+
+        uint32_t lhs = static_cast<uint32_t>(valueFound & curSize);
+        uint32_t rhs = static_cast<uint32_t>(value & curSize);
 
         // The finalCondition is now determined by whether the value is
         // relationally equivalent to the valueFound.
         switch(op) {
-                case EQUAL_OP:          finalCondition = (valueFound == value);
+                case EQUAL_OP:          finalCondition = (lhs == rhs);
                                         break;
-                case NOT_EQUAL_OP:      finalCondition = (valueFound != value);
+                case NOT_EQUAL_OP:      finalCondition = (lhs != rhs);
                                         break;
-                case GT_OP:             finalCondition = (valueFound > value);
+                case GT_OP:             finalCondition = (lhs > rhs);
                                         break;
-                case GT_EQUAL_OP:       finalCondition = (valueFound >= value);
+                case GT_EQUAL_OP:       finalCondition = (lhs >= rhs);
                                         break;
-                case LT_OP:             finalCondition = (valueFound < value);
+                case LT_OP:             finalCondition = (lhs < rhs);
                                         break;
-                case LT_EQUAL_OP:       finalCondition = (valueFound <= value);
+                case LT_EQUAL_OP:       finalCondition = (lhs <= rhs);
                                         break;
                 case NA_OP:             // Value does not matter.
                                         finalCondition = true;

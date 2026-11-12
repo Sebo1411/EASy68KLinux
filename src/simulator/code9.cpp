@@ -704,7 +704,9 @@ int TRAP()
           code = memoryMapCheck(Invalid, addr, static_cast<int>(maxLen));
           if (code == BUS_ERROR)
             return code;
+          inputMode = true;
           simIO->textIn(&memory[addr], &D[1], NULL); // read string, length in D1
+          inputMode = false;
         }
         break;
       case 3:  // display number in D1.L
@@ -714,11 +716,15 @@ int TRAP()
         break;
       case 4:  // read number to D1.L   // inputBuf & inputSize must be global
         inputSize = sizeof(inputBuf);   // capacity, not the stale zero
+        inputMode = true;
         simIO->textIn(inputBuf, &inputSize, &D[1]); // read number to D1
+        inputMode = false;
         D[1] &= LONG_MASK;
         break;
       case 5:  // read char to D1.B
+        inputMode = true;
         simIO->charIn((char*)&D[1]);
+        inputMode = false;
         break;
       case 6:  // display char in D1.B
         simIO->charOut((char)D[1]);
@@ -832,7 +838,9 @@ int TRAP()
           copyMemoryString(buf, sizeof(buf), addr);
           simIO->textOut(buf);    // display string without CRLF
           inputSize = sizeof(inputBuf);
+          inputMode = true;
           simIO->textIn(inputBuf, &inputSize, &D[1]); // read number to D1
+          inputMode = false;
           D[1] &= LONG_MASK;
         }
         break;
@@ -864,6 +872,10 @@ int TRAP()
         }
         break;
       case 24:
+        if ((D[1] & LONG_MASK) == 0)
+          disableKeyCommands = false;
+        else if ((D[1] & LONG_MASK) == 1)
+          disableKeyCommands = true;
         break;
       case 25:                          // scroll text window at Row, Col, Height, Width, Up or Down
         simIO->scrollRect( (ushort)(D[1]>>16), (ushort)D[1], (ushort)(D[2]>>16), (ushort)D[2], (ushort)D[3] );
@@ -1212,29 +1224,55 @@ int TRAP()
         break;
 
       // -------------------- NETWORK -----------------------------
-      case 100:                  // if Create Client
-        simIO->createNetClient(D[1], &memory[A[2] & ADDRMASK], (int*)&D[0]);
+      case 100: {                // if Create Client
+        int netRes = 0;
+        simIO->createNetClient(static_cast<int>(D[1]), &memory[A[2] & ADDRMASK], &netRes);
+        D[0] = static_cast<uint32_t>(netRes);
         break;
-      case 101:                  // if Create Server
-        simIO->createNetServer(D[1], (int*)&D[0]);
+      }
+      case 101: {                // if Create Server
+        int netRes = 0;
+        simIO->createNetServer(static_cast<int>(D[1]), &netRes);
+        D[0] = static_cast<uint32_t>(netRes);
         break;
-      case 102:                  // if Send (Deprecated)
-        simIO->sendNet(D[1], &memory[A[1] & ADDRMASK], &memory[A[2] & ADDRMASK], (int*)&D[1], (int*)&D[0]);
+      }
+      case 102: {                // if Send (Deprecated)
+        int netRes = 0;
+        int cnt = static_cast<int>(D[1] & LONG_MASK);
+        simIO->sendNet(static_cast<int>(D[1]), &memory[A[1] & ADDRMASK], &memory[A[2] & ADDRMASK], &cnt, &netRes);
+        D[0] = static_cast<uint32_t>(netRes);
+        D[1] = static_cast<uint32_t>(cnt);
         break;
-      case 103:                  // if Receive (Deprecated)
-        simIO->receiveNet(D[1], &memory[A[1] & ADDRMASK], (int*)&D[1], &memory[A[2] & ADDRMASK], (int*)&D[0]);
+      }
+      case 103: {                // if Receive (Deprecated)
+        int netRes = 0;
+        int cnt = static_cast<int>(D[1] & LONG_MASK);
+        simIO->receiveNet(static_cast<int>(D[1]), &memory[A[1] & ADDRMASK], &cnt, &memory[A[2] & ADDRMASK], &netRes);
+        D[0] = static_cast<uint32_t>(netRes);
+        D[1] = static_cast<uint32_t>(cnt);
         break;
-      case 104:                  // if Close Connection
-        simIO->closeNetConnection(D[1], (int*)&D[0]);
+      }
+      case 104: {                // if Close Connection
+        int netRes = 0;
+        simIO->closeNetConnection(static_cast<int>(D[1]), &netRes);
+        D[0] = static_cast<uint32_t>(netRes);
         break;
-      case 105:                  // if Get Local IP
-        simIO->getLocalIP(&memory[A[2] & ADDRMASK], (int*)&D[0]);
+      }
+      case 105: {                // if Get Local IP
+        int netRes = 0;
+        simIO->getLocalIP(&memory[A[2] & ADDRMASK], &netRes);
+        D[0] = static_cast<uint32_t>(netRes);
         break;
+      }
       case 106:                  // if Send on port
         simIO->sendPortNet(&D[0], &D[1], &memory[A[1] & ADDRMASK], &memory[A[2] & ADDRMASK]);
+        D[0] &= LONG_MASK;
+        D[1] &= LONG_MASK;
         break;
       case 107:                  // if Receive data and port
         simIO->receivePortNet(&D[0], &D[1], &memory[A[1] & ADDRMASK], &memory[A[2] & ADDRMASK]);
+        D[0] &= LONG_MASK;
+        D[1] &= LONG_MASK;
         break;
       default:
         return (TRAP_TRAP);

@@ -17,12 +17,23 @@ void setCount(int); bool isBreak(); bool isEnabled(); void isEnabled(bool);
 
 ***************************************************************************/
 
+#include <algorithm>
 #include <assert.h>
 #include "extern.h"
 #include "bpointexpr.h"
 
 // Default constructor
-BPointExpr::BPointExpr() {}
+BPointExpr::BPointExpr()
+    : id(0),
+      p_count(0),
+      i_count(0),
+      count(1),
+      isBrk(false),
+      isEnab(false)
+{
+    std::fill_n(postfix_expr, MAX_LB_NODES, 0);
+    std::fill_n(infix_expr, MAX_LB_NODES, 0);
+}
 
 // Destructor
 BPointExpr::~BPointExpr() {}
@@ -37,7 +48,7 @@ void BPointExpr::setId(int _id) {
 }
 
 void BPointExpr::setPostfixExpr(int * _postfix_expr, int _p_count) {
-        p_count = _p_count;
+        p_count = std::max(0, std::min(_p_count, MAX_LB_NODES));
         for(int p = 0; p < p_count; p++)
                 postfix_expr[p] = _postfix_expr[p];
 }
@@ -50,7 +61,7 @@ void BPointExpr::getPostfixExpr(int * _postfix_expr, int & _p_count) {
 
 
 void BPointExpr::setInfixExpr(int * _infix_expr, int _i_count) {
-        i_count = _i_count;
+        i_count = std::max(0, std::min(_i_count, MAX_LB_NODES));
         for(int i = 0; i < i_count; i++)
                 infix_expr[i] = _infix_expr[i];
 }
@@ -93,8 +104,8 @@ and the priority of the operators is no longer relevant.
 You can use the following algorithm to evaluate postfix expressions:
 */
 bool BPointExpr::isBreak() {
-        // If the breakpoint is turned off, then don't process
-        if(!isEnab)
+        // If the breakpoint is turned off or malformed, don't process
+        if(!isEnab || p_count <= 0 || p_count > MAX_LB_NODES || id < 0 || id >= MAX_BP_EXPR)
                 return false;
 
         // Initialize an empty stack.
@@ -112,10 +123,9 @@ bool BPointExpr::isBreak() {
                         s_operand.push(breakPoints[curToken].isBreak());
                 }
                 else {
-                        // If the character is an operator, pop two operands, perform the
-                        // appropriate operation, and then push the result onto the stack.
-                        // If you could not pop two operators, the syntax of the postfix
-                        // expression was not correct.
+                        if (s_operand.size() < 2) {
+                                return false;
+                        }
                         bool aCondition = s_operand.top();
                         s_operand.pop();
                         bool bCondition = s_operand.top();
@@ -136,16 +146,18 @@ bool BPointExpr::isBreak() {
                 }
         }
 
-        // At the end of the postfix expression, pop a result from the stack.
-        // If the postfix expression was correctly formed, the stack should be empty.
+        if (s_operand.size() != 1) {
+                return false;
+        }
         isBrk = s_operand.top();
         s_operand.pop();
 
         // Verify that the condition has been met the specified number of times.
+        int targetCount = (count > 0) ? count : 1;
         if(isBrk) bpCountCond[id]++;
-        isBrk = (count == bpCountCond[id]);
+        isBrk = (bpCountCond[id] >= targetCount);
         if(isBrk) bpCountCond[id] = 0;          // Reset counter for next iteration.
-	return isBrk;
+        return isBrk;
 }
 
 

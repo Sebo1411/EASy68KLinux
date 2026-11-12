@@ -1,5 +1,6 @@
 #include "simulatormanager.h"
 #include <cstring>
+#include <QElapsedTimer>
 #include <QFileInfo>
 #include "../simulator/def.h"
 #include "../simulator/extern.h"
@@ -401,11 +402,45 @@ void SimulatorManager::clearCycles()
     emit registersChanged();
 }
 
+void SimulatorManager::setExceptionsEnabled(bool enabled)
+{
+    exceptions = enabled ? 1 : 0;
+    emit stateChanged();
+}
+
+bool SimulatorManager::isExceptionsEnabled() const
+{
+    return exceptions != 0;
+}
+
+void SimulatorManager::notifyBreakpointsChanged()
+{
+    emit stateChanged();
+}
+
 void SimulatorManager::provideInput(const QString &input)
 {
     (void)input;
     if (m_execState == SimExecState::WaitingTerminalInput) {
         applyExecEvent(SimExecEvent::InputCompleted);
+    }
+}
+
+void SimulatorManager::setInputWaiting(bool waiting)
+{
+    if (waiting) {
+        if (runTimer && runTimer->isActive()) {
+            m_pausedForInput = true;
+            runTimer->stop();
+        }
+        emit stateChanged();
+        emit registersChanged();
+        emit memoryChanged(static_cast<uint32_t>(PC));
+    } else if (m_pausedForInput) {
+        m_pausedForInput = false;
+        if (running && runTimer && !runTimer->isActive()) {
+            runTimer->start();
+        }
     }
 }
 
@@ -429,14 +464,22 @@ void SimulatorManager::autoTraceStep()
 
 void SimulatorManager::executionBatch()
 {
-    if (!running) return;
+    if (!running || m_inExecutionBatch) return;
+
+    struct BatchGuard {
+        bool &flag;
+        explicit BatchGuard(bool &f) : flag(f) { flag = true; }
+        ~BatchGuard() { flag = false; }
+    } guard(m_inExecutionBatch);
+
+    QElapsedTimer budget;
+    budget.start();
+    constexpr qint64 kBatchBudgetMs = 8;
 
     for (int i = 0; i < BATCH_SIZE; ++i) {
-        if (halt || !runMode) {
+        if (halt) {
             applyExecEvent(SimExecEvent::SimHaltHit);
-            if (halt) {
-                emit simulationHalted(tr("Execution halted at PC=0x%1").arg(static_cast<uint32_t>(PC), 8, 16, QLatin1Char('0')));
-            }
+            emit simulationHalted(tr("Execution halted at PC=0x%1").arg(static_cast<uint32_t>(PC), 8, 16, QLatin1Char('0')));
             return;
         }
         if (inputMode) {
@@ -447,7 +490,7 @@ void SimulatorManager::executionBatch()
             applyExecEvent(SimExecEvent::StopInstrHit);
             return;
         }
-        if (hasBreakpoint(static_cast<uint32_t>(PC))) {
+        if (!runMode || hasBreakpoint(static_cast<uint32_t>(PC))) {
             applyExecEvent(SimExecEvent::BreakpointHit);
             return;
         }
@@ -475,10 +518,6 @@ void SimulatorManager::executionBatch()
             applyExecEvent(SimExecEvent::StopInstrHit);
             return;
         }
-        if (hasBreakpoint(static_cast<uint32_t>(PC))) {
-            applyExecEvent(SimExecEvent::BreakpointHit);
-            return;
-        }
         if (runToAddr != 0 && static_cast<uint32_t>(PC) == static_cast<uint32_t>(runToAddr)) {
             applyExecEvent(SimExecEvent::TargetReached);
             return;
@@ -486,6 +525,14 @@ void SimulatorManager::executionBatch()
         if (stepToAddr != 0 && static_cast<uint32_t>(PC) == static_cast<uint32_t>(stepToAddr)) {
             applyExecEvent(SimExecEvent::TargetReached);
             return;
+        }
+        if (hasBreakpoint(static_cast<uint32_t>(PC)) || trace || !runMode) {
+            applyExecEvent(SimExecEvent::BreakpointHit);
+            return;
+        }
+
+        if ((i & 0xFF) == 0xFF && budget.elapsed() >= kBatchBudgetMs) {
+            break;
         }
     }
 

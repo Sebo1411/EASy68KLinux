@@ -11,6 +11,8 @@
 #include <QComboBox>
 #include <QTimer>
 #include <QLabel>
+#include <QMouseEvent>
+#include <QKeyEvent>
 #include <string>
 
 class HardwareWidget : public QWidget
@@ -37,8 +39,11 @@ public:
     void getXY(short *x, short *y);
     void rectangle(int x1, int y1, int x2, int y2);
     void ellipse(int x1, int y1, int x2, int y2);
+    void floodFill(int x1, int y1);
     void unfilledRectangle(int x1, int y1, int x2, int y2);
     void unfilledEllipse(int x1, int y1, int x2, int y2);
+    void setDrawingMode(int mode);
+    void repaintCanvas();
     void drawText(const std::string& str, int x, int y);
     void clearCanvas();
     void getWindowSize(unsigned short &w, unsigned short &h);
@@ -61,6 +66,7 @@ public:
 
 signals:
     void hardwareResetRequested();
+    void canvasKeyEvent(QKeyEvent *event, bool pressed);
 
 public slots:
     void onClearCanvasClicked();
@@ -106,6 +112,12 @@ private:
         explicit CanvasView(HardwareWidget *owner, QWidget *parent = nullptr);
     protected:
         void paintEvent(QPaintEvent *event) override;
+        void mousePressEvent(QMouseEvent *event) override;
+        void mouseReleaseEvent(QMouseEvent *event) override;
+        void mouseMoveEvent(QMouseEvent *event) override;
+        void mouseDoubleClickEvent(QMouseEvent *event) override;
+        void keyPressEvent(QKeyEvent *event) override;
+        void keyReleaseEvent(QKeyEvent *event) override;
     private:
         HardwareWidget *ownerWidget;
     };
@@ -140,11 +152,19 @@ private:
     QLineEdit *invalidEndEdit;
 
     // Graphics state protected by mutex
+    QImage& activeCanvas();
+    void commitGraphicsDraw(const QImage *overlay = nullptr, const QColor &drawCol = Qt::white);
+    void notifyCanvasChanged();
+
     mutable QMutex graphicsMutex;
     QImage canvas;
+    QImage backBuffer;
+    QLabel *canvasSizeLabel = nullptr;
     QColor currentLineColor = Qt::white;
     QColor currentFillColor = Qt::black;
     int currentPenWidth = 1;
+    int currentDrawingMode = 4;
+    bool doubleBuffered = false;
     short currentX = 0;
     short currentY = 0;
 };

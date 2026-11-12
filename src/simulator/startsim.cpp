@@ -27,6 +27,11 @@ void initSim()                   // initialization for the simulator
 
   inputMode = false;
   pendingKey = 0;               // clear pendingKey
+  disableKeyCommands = false;
+
+  for (i = 0; i < MAX_BPOINTS; i++) {
+    bpCountCond[i] = 0;
+  }
 
   runMode = false;
   lbuf[0] = '\0';		// initialize to prevent memory access violations
@@ -49,7 +54,10 @@ void initSim()                   // initialization for the simulator
   inputLFdisplay = true;
 
   for (i=0; i<MAXFILES; i++) {  // clear file structures
-    files[i].fp = NULL;
+    if (files[i].fp != NULL) {
+      fclose(files[i].fp);
+      files[i].fp = NULL;
+    }
   }
 
   irq = 0;                      // reset IRQ flags
@@ -93,6 +101,7 @@ void initSim()                   // initialization for the simulator
   keyUpIRQ = 0;
 
   simIO->ResetSounds(); // stop all playing sounds and clear sound memory
+  simIO->closeNetConnection(0, nullptr);
 }
 
 

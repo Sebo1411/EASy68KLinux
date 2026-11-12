@@ -27,6 +27,8 @@ public:
     int getLineCount() const { return listingLines.size(); }
     int getFirstVisibleLine() const;
     int getLastVisibleLine() const;
+    bool findText(const QString &query, bool forward = true,
+                  bool caseSensitive = false, bool wholeWord = false);
     static bool isInstructionLine(const QString &line);
     static uint32_t getLineAddress(const QString &line);
 
@@ -64,6 +66,8 @@ public:
     void loadListing(const QStringList &rawLines);
     void highlightPC(uint32_t pc, bool isHalted);
     void clear();
+    bool findText(const QString &query, bool forward = true,
+                  bool caseSensitive = false, bool wholeWord = false);
 
     ListingScrollArea* scrollArea() const { return area; }
 

@@ -1,6 +1,8 @@
 #include "mainwindow.h"
 #include "codeeditor.h"
 #include "syntaxhighlighter.h"
+#include "findreplacebar.h"
+#include "breakpointdialog.h"
 #include "listingwidget.h"
 #include "registersview.h"
 #include "memoryview.h"
@@ -12,7 +14,9 @@
 #include "terminalwidget.h"
 #include "simulatormanager.h"
 #include "updater.h"
+#include "../simulator/extern.h"
 
+#include <QCloseEvent>
 #include <QMenuBar>
 #include <QMenu>
 #include <QToolBar>
@@ -33,6 +37,8 @@
 #include <QLabel>
 #include <QSaveFile>
 #include <QInputDialog>
+#include <QSettings>
+#include <QSet>
 #include <QStyle>
 #include <QIcon>
 #include <QPixmap>
@@ -367,15 +373,33 @@ MainWindow::MainWindow(QWidget *parent)
 
     connect(hardwareWidget, &HardwareWidget::hardwareResetRequested, this, &MainWindow::onSimulatorReset);
 
-    auto *cursorPosLabel = new QLabel(tr("Line: 1, Col: 1"), this);
-    statusBar()->addPermanentWidget(cursorPosLabel);
-    connect(editor, &QPlainTextEdit::cursorPositionChanged, this, [this, cursorPosLabel]() {
-        QTextCursor tc = editor->textCursor();
-        cursorPosLabel->setText(tr("Line: %1, Col: %2").arg(tc.blockNumber() + 1).arg(tc.columnNumber() + 1));
+    // Pause simulator runTimer cleanly while TerminalWidget waits for TRAP #15 input
+    connect(terminalWidget, &TerminalWidget::inputWaitChanged, this, [this](bool waiting) {
+        if (simManager) {
+            simManager->setInputWaiting(waiting);
+        }
+        if (waiting) {
+            if (mainTabs && mainTabs->currentIndex() != 1) {
+                mainTabs->setCurrentIndex(1);
+            }
+            if (simRightTabs) {
+                simRightTabs->setCurrentWidget(terminalWidget);
+            }
+            terminalWidget->setFocus();
+        }
     });
 
+    // Refresh lazy-dirty right-pane simulator tabs when switched into view
+    connect(simRightTabs, &QTabWidget::currentChanged, this, [this](int idx) {
+        refreshSimRightTab(simRightTabs->widget(idx));
+    });
+
+    cursorPosLabel = new QLabel(tr("Line: 1, Col: 1"), this);
+    statusBar()->addPermanentWidget(cursorPosLabel);
+    updateCursorPositionLabel();
+
+    loadSettings();
     setCurrentFile(QString());
-    resize(1200, 800);
 
     if (Updater::autoCheckOnStartup() && QGuiApplication::platformName() != QStringLiteral("offscreen")) {
         QTimer::singleShot(2000, this, [this]() {
@@ -392,13 +416,36 @@ MainWindow::~MainWindow()
     }
 }
 
+void MainWindow::closeEvent(QCloseEvent *event)
+{
+    if (!maybeSaveAll()) {
+        event->ignore();
+        return;
+    }
+    if (simManager && simManager->isRunning()) {
+        simManager->pause();
+    }
+    saveSettings();
+    event->accept();
+}
+
 void MainWindow::setupUi()
 {
-    mainTabs = new QTabWidget(this);
-    setCentralWidget(mainTabs);
+    auto *centralContainer = new QWidget(this);
+    auto *centralLayout = new QVBoxLayout(centralContainer);
+    centralLayout->setContentsMargins(0, 0, 0, 0);
+    centralLayout->setSpacing(0);
+
+    mainTabs = new QTabWidget(centralContainer);
+    centralLayout->addWidget(mainTabs, 1);
+
+    findReplaceBar = new FindReplaceBar(centralContainer);
+    centralLayout->addWidget(findReplaceBar);
+
+    setCentralWidget(centralContainer);
 
     // =========================================================================
-    // Tab 0: Source Editor (Edit68K)
+    // Tab 0: Source Editor (Edit68K) with Multi-Tab Support
     // =========================================================================
     auto *editorTab = new QWidget(this);
     auto *editorLayout = new QVBoxLayout(editorTab);
@@ -406,9 +453,14 @@ void MainWindow::setupUi()
 
     auto *editorSplitter = new QSplitter(Qt::Vertical, editorTab);
 
-    editor = new CodeEditor(editorSplitter);
-    highlighter = new SyntaxHighlighter(editor->document());
-    editorSplitter->addWidget(editor);
+    editorTabs = new QTabWidget(editorSplitter);
+    editorTabs->setTabsClosable(true);
+    editorTabs->setMovable(true);
+    editorTabs->setDocumentMode(true);
+    connect(editorTabs, &QTabWidget::currentChanged, this, &MainWindow::syncActiveEditorTab);
+    connect(editorTabs, &QTabWidget::tabCloseRequested, this, &MainWindow::closeEditorTab);
+    createNewEditorTab();
+    editorSplitter->addWidget(editorTabs);
 
     auto *buildWidget = new QWidget(editorSplitter);
     auto *buildLayout = new QVBoxLayout(buildWidget);
@@ -518,6 +570,14 @@ void MainWindow::createActions()
     newAct->setShortcuts(QKeySequence::New);
     connect(newAct, &QAction::triggered, this, &MainWindow::newFile);
 
+    newTabAct = new QAction(tr("New &Tab"), this);
+    newTabAct->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_T));
+    connect(newTabAct, &QAction::triggered, this, &MainWindow::newTab);
+
+    closeTabAct = new QAction(tr("&Close Tab"), this);
+    closeTabAct->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_W));
+    connect(closeTabAct, &QAction::triggered, this, [this]() { closeEditorTab(-1); });
+
     openAct = new QAction(createModernToolbarIcon("open"), tr("&Open..."), this);
     openAct->setShortcuts(QKeySequence::Open);
     connect(openAct, &QAction::triggered, this, &MainWindow::openFile);
@@ -530,6 +590,14 @@ void MainWindow::createActions()
     saveAsAct->setShortcuts(QKeySequence::SaveAs);
     connect(saveAsAct, &QAction::triggered, this, &MainWindow::saveFileAs);
 
+    for (int i = 0; i < MaxRecentFiles; ++i) {
+        recentFileActs[i] = new QAction(this);
+        recentFileActs[i]->setVisible(false);
+        connect(recentFileActs[i], &QAction::triggered, this, &MainWindow::openRecentFile);
+    }
+    clearRecentAct = new QAction(tr("&Clear Recent Files"), this);
+    connect(clearRecentAct, &QAction::triggered, this, &MainWindow::onClearRecentFiles);
+
     exitAct = new QAction(tr("E&xit"), this);
     exitAct->setShortcuts(QKeySequence::Quit);
     connect(exitAct, &QAction::triggered, this, &QWidget::close);
@@ -537,23 +605,23 @@ void MainWindow::createActions()
     // Edit Actions (Edit68K)
     undoAct = new QAction(createModernToolbarIcon("undo"), tr("&Undo"), this);
     undoAct->setShortcuts(QKeySequence::Undo);
-    connect(undoAct, &QAction::triggered, editor, &QPlainTextEdit::undo);
+    connect(undoAct, &QAction::triggered, this, [this]() { if (editor) editor->undo(); });
 
     redoAct = new QAction(createModernToolbarIcon("redo"), tr("&Redo"), this);
     redoAct->setShortcuts(QKeySequence::Redo);
-    connect(redoAct, &QAction::triggered, editor, &QPlainTextEdit::redo);
+    connect(redoAct, &QAction::triggered, this, [this]() { if (editor) editor->redo(); });
 
     cutAct = new QAction(createModernToolbarIcon("cut"), tr("Cu&t"), this);
     cutAct->setShortcuts(QKeySequence::Cut);
-    connect(cutAct, &QAction::triggered, editor, &QPlainTextEdit::cut);
+    connect(cutAct, &QAction::triggered, this, [this]() { if (editor) editor->cut(); });
 
     copyAct = new QAction(createModernToolbarIcon("copy"), tr("&Copy"), this);
     copyAct->setShortcuts(QKeySequence::Copy);
-    connect(copyAct, &QAction::triggered, editor, &QPlainTextEdit::copy);
+    connect(copyAct, &QAction::triggered, this, [this]() { if (editor) editor->copy(); });
 
     pasteAct = new QAction(createModernToolbarIcon("paste"), tr("&Paste"), this);
     pasteAct->setShortcuts(QKeySequence::Paste);
-    connect(pasteAct, &QAction::triggered, editor, &QPlainTextEdit::paste);
+    connect(pasteAct, &QAction::triggered, this, [this]() { if (editor) editor->paste(); });
 
     commentAct = new QAction(createModernToolbarIcon("comment"), tr("Comment Lines (+*)"), this);
     connect(commentAct, &QAction::triggered, this, &MainWindow::onCommentLines);
@@ -631,14 +699,88 @@ void MainWindow::createActions()
         simManager->clearBreakpoints();
     });
 
+    advancedBpsAct = new QAction(tr("Advanced Breakpoints && &Watchpoints..."), this);
+    advancedBpsAct->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_B));
+    connect(advancedBpsAct, &QAction::triggered, this, &MainWindow::onAdvancedBreakpoints);
+
     // Search Actions
     findAct = new QAction(createModernToolbarIcon("find"), tr("&Find..."), this);
     findAct->setShortcut(QKeySequence::Find);
     connect(findAct, &QAction::triggered, this, &MainWindow::onFindText);
 
+    replaceAct = new QAction(tr("&Replace..."), this);
+    replaceAct->setShortcut(QKeySequence::Replace);
+    connect(replaceAct, &QAction::triggered, this, &MainWindow::onReplaceText);
+
+    findNextAct = new QAction(tr("Find &Next"), this);
+    findNextAct->setShortcut(QKeySequence::FindNext);
+    connect(findNextAct, &QAction::triggered, this, &MainWindow::onFindNext);
+
+    findPrevAct = new QAction(tr("Find &Previous"), this);
+    findPrevAct->setShortcut(QKeySequence::FindPrevious);
+    connect(findPrevAct, &QAction::triggered, this, &MainWindow::onFindPrev);
+
     goToPcAct = new QAction(tr("&Go to PC"), this);
     goToPcAct->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_G));
     connect(goToPcAct, &QAction::triggered, this, &MainWindow::onGoToPC);
+
+    // Options Actions
+    exceptionsOptAct = new QAction(tr("Enable 68000 &Exceptions"), this);
+    exceptionsOptAct->setCheckable(true);
+    exceptionsOptAct->setChecked(m_exceptionsEnabled);
+    connect(exceptionsOptAct, &QAction::toggled, this, [this](bool checked) {
+        m_exceptionsEnabled = checked;
+        if (simManager) simManager->setExceptionsEnabled(checked);
+    });
+
+    bitfieldOptAct = new QAction(tr("Assembler &Bitfield Support (-b)"), this);
+    bitfieldOptAct->setCheckable(true);
+    bitfieldOptAct->setChecked(m_bitfieldEnabled);
+    connect(bitfieldOptAct, &QAction::toggled, this, [this](bool checked) {
+        m_bitfieldEnabled = checked;
+    });
+
+    xrefOptAct = new QAction(tr("Assembler Cross-&Reference Table (-x)"), this);
+    xrefOptAct->setCheckable(true);
+    xrefOptAct->setChecked(m_xrefEnabled);
+    connect(xrefOptAct, &QAction::toggled, this, [this](bool checked) {
+        m_xrefEnabled = checked;
+    });
+
+    simhaltOptAct = new QAction(tr("Enable &SIMHALT Instruction"), this);
+    simhaltOptAct->setCheckable(true);
+    simhaltOptAct->setChecked(m_simhaltDefault);
+    connect(simhaltOptAct, &QAction::toggled, this, [this](bool checked) {
+        m_simhaltDefault = checked;
+        simhalt_on = checked;
+    });
+
+    autoTraceIntervalAct = new QAction(tr("&Auto-Trace Interval..."), this);
+    connect(autoTraceIntervalAct, &QAction::triggered, this, [this]() {
+        bool ok = false;
+        int val = QInputDialog::getInt(this, tr("Auto-Trace Interval"),
+                                       tr("Step interval (ms):"), m_autoTraceIntervalMs,
+                                       5, 5000, 5, &ok);
+        if (ok) {
+            m_autoTraceIntervalMs = val;
+            if (simManager && simManager->isAutoTracing()) {
+                simManager->toggleAutoTrace(val);
+                simManager->toggleAutoTrace(val);
+            }
+        }
+    });
+
+    fontIncreaseAct = new QAction(tr("Increase Editor &Font Size"), this);
+    fontIncreaseAct->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_Equal));
+    connect(fontIncreaseAct, &QAction::triggered, this, [this]() { adjustEditorFontSize(+1); });
+
+    fontDecreaseAct = new QAction(tr("&Decrease Editor Font Size"), this);
+    fontDecreaseAct->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_Minus));
+    connect(fontDecreaseAct, &QAction::triggered, this, [this]() { adjustEditorFontSize(-1); });
+
+    fontResetAct = new QAction(tr("&Reset Editor Font Size"), this);
+    fontResetAct->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_0));
+    connect(fontResetAct, &QAction::triggered, this, [this]() { adjustEditorFontSize(0); });
 
     // View Actions
     viewOutputAct = new QAction(tr("&Output Window"), this);
@@ -725,9 +867,18 @@ void MainWindow::createMenus()
 {
     auto *fileMenu = menuBar()->addMenu(tr("&File"));
     fileMenu->addAction(newAct);
+    fileMenu->addAction(newTabAct);
     fileMenu->addAction(openAct);
+    recentFilesMenu = fileMenu->addMenu(tr("Open &Recent"));
+    for (int i = 0; i < MaxRecentFiles; ++i) {
+        recentFilesMenu->addAction(recentFileActs[i]);
+    }
+    recentFilesMenu->addSeparator();
+    recentFilesMenu->addAction(clearRecentAct);
+    updateRecentFilesMenu();
     fileMenu->addAction(saveAct);
     fileMenu->addAction(saveAsAct);
+    fileMenu->addAction(closeTabAct);
     fileMenu->addSeparator();
     fileMenu->addAction(exitAct);
 
@@ -745,6 +896,10 @@ void MainWindow::createMenus()
 
     auto *searchMenu = menuBar()->addMenu(tr("&Search"));
     searchMenu->addAction(findAct);
+    searchMenu->addAction(replaceAct);
+    searchMenu->addAction(findNextAct);
+    searchMenu->addAction(findPrevAct);
+    searchMenu->addSeparator();
     searchMenu->addAction(goToPcAct);
 
     auto *viewMenu = menuBar()->addMenu(tr("&View"));
@@ -774,9 +929,22 @@ void MainWindow::createMenus()
     runMenu->addAction(resetAct);
     runMenu->addSeparator();
     runMenu->addAction(toggleBpAct);
+    runMenu->addAction(advancedBpsAct);
     runMenu->addAction(clearBpsAct);
     runMenu->addSeparator();
     runMenu->addAction(loadS68Act);
+
+    auto *optionsMenu = menuBar()->addMenu(tr("&Options"));
+    optionsMenu->addAction(exceptionsOptAct);
+    optionsMenu->addAction(bitfieldOptAct);
+    optionsMenu->addAction(xrefOptAct);
+    optionsMenu->addAction(simhaltOptAct);
+    optionsMenu->addSeparator();
+    optionsMenu->addAction(autoTraceIntervalAct);
+    optionsMenu->addSeparator();
+    optionsMenu->addAction(fontIncreaseAct);
+    optionsMenu->addAction(fontDecreaseAct);
+    optionsMenu->addAction(fontResetAct);
 
     auto *helpMenu = menuBar()->addMenu(tr("&Help"));
     helpMenu->addAction(helpDocAct);
@@ -815,73 +983,251 @@ void MainWindow::createToolBars()
     mainToolBar->addAction(reloadAct);
 }
 
+int MainWindow::createNewEditorTab(const QString &fileName, const QString &content)
+{
+    auto *ed = new CodeEditor(editorTabs);
+    ed->setEditorFontSize(m_editorFontSize);
+    auto *hl = new SyntaxHighlighter(ed->document());
+
+    if (!content.isEmpty()) {
+        ed->setPlainText(content);
+    }
+    ed->document()->setModified(false);
+
+    EditorTabState state;
+    state.editor = ed;
+    state.highlighter = hl;
+    state.filePath = fileName;
+    if (!fileName.isEmpty()) {
+        QFileInfo fi(fileName);
+        const QString base = fi.path() + "/" + fi.completeBaseName();
+        state.s68Path = base + ".s68";
+        state.listingPath = base + ".l68";
+    }
+
+    const int idx = editorTabs->addTab(ed, fileName.isEmpty() ? tr("untitled.x68") : QFileInfo(fileName).fileName());
+    m_editorTabs.insert(idx, state);
+
+    connect(ed, &QPlainTextEdit::cursorPositionChanged, this, &MainWindow::updateCursorPositionLabel);
+    connect(ed->document(), &QTextDocument::modificationChanged, this, [this, ed](bool) {
+        for (int i = 0; i < m_editorTabs.size(); ++i) {
+            if (m_editorTabs[i].editor == ed) {
+                updateTabTitle(i);
+                if (i == editorTabs->currentIndex()) {
+                    setWindowModified(ed->document()->isModified());
+                }
+                break;
+            }
+        }
+    });
+
+    editorTabs->setCurrentIndex(idx);
+    syncActiveEditorTab(idx);
+    return idx;
+}
+
+int MainWindow::findTabByFilePath(const QString &fileName) const
+{
+    const QString targetCanon = QFileInfo(fileName).canonicalFilePath();
+    const QString targetAbs = QFileInfo(fileName).absoluteFilePath();
+    for (int i = 0; i < m_editorTabs.size(); ++i) {
+        if (m_editorTabs[i].filePath.isEmpty()) continue;
+        const QString canon = QFileInfo(m_editorTabs[i].filePath).canonicalFilePath();
+        const QString abs = QFileInfo(m_editorTabs[i].filePath).absoluteFilePath();
+        if ((!targetCanon.isEmpty() && canon == targetCanon) || abs == targetAbs) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+void MainWindow::syncActiveEditorTab(int index)
+{
+    if (index < 0 || index >= m_editorTabs.size()) {
+        return;
+    }
+    const EditorTabState &st = m_editorTabs[index];
+    editor = st.editor;
+    highlighter = st.highlighter;
+    currentFilePath = st.filePath;
+    currentS68Path = st.s68Path;
+    currentListingPath = st.listingPath;
+
+    if (findReplaceBar && mainTabs && mainTabs->currentIndex() == 0) {
+        findReplaceBar->setEditor(editor);
+    }
+
+    const QString shownName = currentFilePath.isEmpty() ? QStringLiteral("untitled.x68") : currentFilePath;
+    setWindowFilePath(shownName);
+    setWindowTitle(QString("%1[*] - EASy68K Native Linux IDE").arg(QFileInfo(shownName).fileName()));
+    if (editor) {
+        setWindowModified(editor->document()->isModified());
+    }
+    updateCursorPositionLabel();
+}
+
+void MainWindow::updateTabTitle(int index)
+{
+    if (index < 0 || index >= m_editorTabs.size() || !editorTabs) return;
+    const EditorTabState &st = m_editorTabs[index];
+    QString name = st.filePath.isEmpty() ? tr("untitled.x68") : QFileInfo(st.filePath).fileName();
+    if (st.editor && st.editor->document()->isModified()) {
+        name.prepend(QLatin1String("* "));
+    }
+    editorTabs->setTabText(index, name);
+    editorTabs->setTabToolTip(index, st.filePath.isEmpty() ? tr("Unsaved document") : st.filePath);
+}
+
+void MainWindow::updateCursorPositionLabel()
+{
+    if (!cursorPosLabel || !editor) return;
+    QTextCursor tc = editor->textCursor();
+    cursorPosLabel->setText(tr("Line: %1, Col: %2").arg(tc.blockNumber() + 1).arg(tc.columnNumber() + 1));
+}
+
 void MainWindow::newFile()
 {
     if (maybeSave()) {
         editor->clear();
+        editor->clearDiagnostics();
         setCurrentFile(QString());
     }
 }
 
+void MainWindow::newTab()
+{
+    mainTabs->setCurrentIndex(0);
+    createNewEditorTab();
+}
+
+bool MainWindow::closeEditorTab(int index)
+{
+    if (!editorTabs || m_editorTabs.isEmpty()) return false;
+    const int targetIdx = (index < 0) ? editorTabs->currentIndex() : index;
+    if (targetIdx < 0 || targetIdx >= m_editorTabs.size()) return false;
+
+    if (!maybeSaveTab(targetIdx)) {
+        return false;
+    }
+
+    if (m_editorTabs.size() == 1) {
+        // Keep one tab open: reset it cleanly
+        m_editorTabs[0].editor->clear();
+        m_editorTabs[0].editor->clearDiagnostics();
+        m_editorTabs[0].filePath.clear();
+        m_editorTabs[0].s68Path.clear();
+        m_editorTabs[0].listingPath.clear();
+        m_editorTabs[0].editor->document()->setModified(false);
+        updateTabTitle(0);
+        syncActiveEditorTab(0);
+        return true;
+    }
+
+    QWidget *w = editorTabs->widget(targetIdx);
+    editorTabs->removeTab(targetIdx);
+    m_editorTabs.remove(targetIdx);
+    delete w;
+
+    if (m_assemblingTabIndex == targetIdx) {
+        m_assemblingTabIndex = -1;
+    } else if (m_assemblingTabIndex > targetIdx) {
+        --m_assemblingTabIndex;
+    }
+
+    syncActiveEditorTab(editorTabs->currentIndex());
+    return true;
+}
+
 void MainWindow::openFile()
 {
-    if (maybeSave()) {
-        QString fileName = QFileDialog::getOpenFileName(this, tr("Open 68000 Assembly File"),
-                                                        QString(), tr("68000 Assembly (*.x68 *.asm *.s);;All Files (*)"));
-        if (!fileName.isEmpty())
-            loadFile(fileName);
+    QString fileName = QFileDialog::getOpenFileName(this, tr("Open 68000 Assembly File"),
+                                                    QString(), tr("68000 Assembly (*.x68 *.asm *.s);;All Files (*)"));
+    if (!fileName.isEmpty()) {
+        loadFile(fileName);
     }
 }
 
-bool MainWindow::saveFile()
+bool MainWindow::saveEditorTab(int index)
 {
-    if (currentFilePath.isEmpty()) {
-        return saveFileAs();
+    if (index < 0 || index >= m_editorTabs.size()) return false;
+    EditorTabState &st = m_editorTabs[index];
+    if (st.filePath.isEmpty()) {
+        return saveEditorTabAs(index);
     }
 
-    QSaveFile file(currentFilePath);
+    QSaveFile file(st.filePath);
     if (file.open(QFile::WriteOnly | QFile::Text)) {
         QTextStream out(&file);
-        out << editor->toPlainText();
+        out << st.editor->toPlainText();
         if (!file.commit()) {
             QMessageBox::warning(this, tr("EASy68K"), tr("Cannot write file %1:\n%2.")
-                                 .arg(QDir::toNativeSeparators(currentFilePath), file.errorString()));
+                                 .arg(QDir::toNativeSeparators(st.filePath), file.errorString()));
             return false;
         }
     } else {
         QMessageBox::warning(this, tr("EASy68K"), tr("Cannot open file %1 for writing:\n%2.")
-                             .arg(QDir::toNativeSeparators(currentFilePath), file.errorString()));
+                             .arg(QDir::toNativeSeparators(st.filePath), file.errorString()));
         return false;
     }
 
-    setCurrentFile(currentFilePath);
+    st.editor->document()->setModified(false);
+    QFileInfo fi(st.filePath);
+    const QString base = fi.path() + "/" + fi.completeBaseName();
+    st.s68Path = base + ".s68";
+    st.listingPath = base + ".l68";
+    updateTabTitle(index);
+    addRecentFile(st.filePath);
+    if (index == editorTabs->currentIndex()) {
+        syncActiveEditorTab(index);
+    }
     statusBar()->showMessage(tr("File saved"), 2000);
     return true;
 }
 
-bool MainWindow::saveFileAs()
+bool MainWindow::saveEditorTabAs(int index)
 {
+    if (index < 0 || index >= m_editorTabs.size()) return false;
     QString fileName = QFileDialog::getSaveFileName(this, tr("Save 68000 Assembly File"),
-                                                    QString(), tr("68000 Assembly (*.x68 *.asm *.s);;All Files (*)"));
+                                                    m_editorTabs[index].filePath,
+                                                    tr("68000 Assembly (*.x68 *.asm *.s);;All Files (*)"));
     if (fileName.isEmpty())
         return false;
 
-    currentFilePath = fileName;
-    return saveFile();
+    m_editorTabs[index].filePath = fileName;
+    return saveEditorTab(index);
 }
 
-bool MainWindow::maybeSave()
+bool MainWindow::saveFile()
 {
-    if (!editor->document()->isModified())
+    if (!editorTabs) return false;
+    return saveEditorTab(editorTabs->currentIndex());
+}
+
+bool MainWindow::saveFileAs()
+{
+    if (!editorTabs) return false;
+    return saveEditorTabAs(editorTabs->currentIndex());
+}
+
+bool MainWindow::maybeSaveTab(int index)
+{
+    if (index < 0 || index >= m_editorTabs.size()) return true;
+    CodeEditor *ed = m_editorTabs[index].editor;
+    if (!ed || !ed->document()->isModified())
         return true;
+
+    editorTabs->setCurrentIndex(index);
+    const QString name = m_editorTabs[index].filePath.isEmpty()
+        ? tr("untitled.x68")
+        : QFileInfo(m_editorTabs[index].filePath).fileName();
 
     const QMessageBox::StandardButton ret
         = QMessageBox::warning(this, tr("EASy68K"),
-                               tr("The document has been modified.\nDo you want to save your changes?"),
+                               tr("'%1' has been modified.\nDo you want to save your changes?").arg(name),
                                QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel);
     switch (ret) {
     case QMessageBox::Save:
-        return saveFile();
+        return saveEditorTab(index);
     case QMessageBox::Cancel:
         return false;
     default:
@@ -890,8 +1236,31 @@ bool MainWindow::maybeSave()
     return true;
 }
 
+bool MainWindow::maybeSave()
+{
+    if (!editorTabs) return true;
+    return maybeSaveTab(editorTabs->currentIndex());
+}
+
+bool MainWindow::maybeSaveAll()
+{
+    for (int i = 0; i < m_editorTabs.size(); ++i) {
+        if (!maybeSaveTab(i)) {
+            return false;
+        }
+    }
+    return true;
+}
+
 void MainWindow::loadFile(const QString &fileName)
 {
+    const int existing = findTabByFilePath(fileName);
+    if (existing >= 0) {
+        mainTabs->setCurrentIndex(0);
+        editorTabs->setCurrentIndex(existing);
+        return;
+    }
+
     QFile file(fileName);
     if (!file.open(QFile::ReadOnly | QFile::Text)) {
         QMessageBox::warning(this, tr("EASy68K"),
@@ -901,21 +1270,159 @@ void MainWindow::loadFile(const QString &fileName)
     }
 
     QTextStream in(&file);
-    editor->setPlainText(in.readAll());
-    setCurrentFile(fileName);
+    const QString content = in.readAll();
+
+    mainTabs->setCurrentIndex(0);
+    const int curIdx = editorTabs->currentIndex();
+    if (curIdx >= 0 && curIdx < m_editorTabs.size()
+        && m_editorTabs[curIdx].filePath.isEmpty()
+        && m_editorTabs[curIdx].editor->document()->isEmpty()
+        && !m_editorTabs[curIdx].editor->document()->isModified()) {
+        editor->setPlainText(content);
+        editor->clearDiagnostics();
+        setCurrentFile(fileName);
+    } else {
+        createNewEditorTab(fileName, content);
+    }
+    addRecentFile(fileName);
     statusBar()->showMessage(tr("File loaded"), 2000);
 }
 
 void MainWindow::setCurrentFile(const QString &fileName)
 {
-    currentFilePath = fileName;
-    editor->document()->setModified(false);
+    if (!editorTabs || m_editorTabs.isEmpty()) return;
+    const int idx = editorTabs->currentIndex();
+    if (idx < 0 || idx >= m_editorTabs.size()) return;
 
-    QString shownName = currentFilePath;
-    if (currentFilePath.isEmpty())
-        shownName = "untitled.x68";
-    setWindowFilePath(shownName);
-    setWindowTitle(QString("%1[*] - EASy68K Native Linux IDE").arg(QFileInfo(shownName).fileName()));
+    m_editorTabs[idx].filePath = fileName;
+    if (!fileName.isEmpty()) {
+        QFileInfo fi(fileName);
+        const QString base = fi.path() + "/" + fi.completeBaseName();
+        m_editorTabs[idx].s68Path = base + ".s68";
+        m_editorTabs[idx].listingPath = base + ".l68";
+    } else {
+        m_editorTabs[idx].s68Path.clear();
+        m_editorTabs[idx].listingPath.clear();
+    }
+    m_editorTabs[idx].editor->document()->setModified(false);
+    updateTabTitle(idx);
+    syncActiveEditorTab(idx);
+}
+
+void MainWindow::addRecentFile(const QString &fileName)
+{
+    if (fileName.isEmpty()) return;
+    const QString abs = QFileInfo(fileName).absoluteFilePath();
+    m_recentFiles.removeAll(abs);
+    m_recentFiles.prepend(abs);
+    while (m_recentFiles.size() > MaxRecentFiles) {
+        m_recentFiles.removeLast();
+    }
+    updateRecentFilesMenu();
+}
+
+void MainWindow::updateRecentFilesMenu()
+{
+    const int count = qMin(m_recentFiles.size(), MaxRecentFiles);
+    for (int i = 0; i < count; ++i) {
+        if (!recentFileActs[i]) continue;
+        const QString text = QString("&%1 %2").arg(i + 1).arg(QFileInfo(m_recentFiles[i]).fileName());
+        recentFileActs[i]->setText(text);
+        recentFileActs[i]->setData(m_recentFiles[i]);
+        recentFileActs[i]->setToolTip(m_recentFiles[i]);
+        recentFileActs[i]->setVisible(true);
+    }
+    for (int i = count; i < MaxRecentFiles; ++i) {
+        if (recentFileActs[i]) recentFileActs[i]->setVisible(false);
+    }
+    if (clearRecentAct) {
+        clearRecentAct->setEnabled(count > 0);
+    }
+}
+
+void MainWindow::openRecentFile()
+{
+    auto *act = qobject_cast<QAction *>(sender());
+    if (!act) return;
+    const QString path = act->data().toString();
+    if (!path.isEmpty()) {
+        loadFile(path);
+    }
+}
+
+void MainWindow::onClearRecentFiles()
+{
+    m_recentFiles.clear();
+    updateRecentFilesMenu();
+}
+
+void MainWindow::adjustEditorFontSize(int deltaOrReset)
+{
+    m_editorFontSize = (deltaOrReset == 0) ? 10 : qBound(7, m_editorFontSize + deltaOrReset, 32);
+    for (const EditorTabState &st : m_editorTabs) {
+        if (st.editor) {
+            st.editor->setEditorFontSize(m_editorFontSize);
+        }
+    }
+    statusBar()->showMessage(tr("Editor font size: %1 pt").arg(m_editorFontSize), 2000);
+}
+
+void MainWindow::loadSettings()
+{
+    if (QGuiApplication::platformName() == QStringLiteral("offscreen")) {
+        resize(1200, 800);
+        return;
+    }
+
+    QSettings settings(QStringLiteral("EASy68K"), QStringLiteral("EASy68KLinux"));
+    const QByteArray geom = settings.value(QStringLiteral("window/geometry")).toByteArray();
+    if (!geom.isEmpty()) {
+        restoreGeometry(geom);
+    } else {
+        resize(1200, 800);
+    }
+    const QByteArray state = settings.value(QStringLiteral("window/state")).toByteArray();
+    if (!state.isEmpty()) {
+        restoreState(state);
+    }
+
+    m_recentFiles = settings.value(QStringLiteral("files/recent")).toStringList();
+    updateRecentFilesMenu();
+
+    m_editorFontSize = qBound(7, settings.value(QStringLiteral("editor/fontSize"), 10).toInt(), 32);
+    for (const EditorTabState &st : m_editorTabs) {
+        if (st.editor) st.editor->setEditorFontSize(m_editorFontSize);
+    }
+
+    m_exceptionsEnabled = settings.value(QStringLiteral("options/exceptions"), false).toBool();
+    m_bitfieldEnabled = settings.value(QStringLiteral("options/bitfield"), false).toBool();
+    m_xrefEnabled = settings.value(QStringLiteral("options/xref"), false).toBool();
+    m_simhaltDefault = settings.value(QStringLiteral("options/simhalt"), true).toBool();
+    m_autoTraceIntervalMs = qBound(5, settings.value(QStringLiteral("options/autoTraceMs"), 50).toInt(), 5000);
+
+    if (exceptionsOptAct) exceptionsOptAct->setChecked(m_exceptionsEnabled);
+    if (bitfieldOptAct) bitfieldOptAct->setChecked(m_bitfieldEnabled);
+    if (xrefOptAct) xrefOptAct->setChecked(m_xrefEnabled);
+    if (simhaltOptAct) simhaltOptAct->setChecked(m_simhaltDefault);
+    if (simManager) simManager->setExceptionsEnabled(m_exceptionsEnabled);
+    simhalt_on = m_simhaltDefault;
+}
+
+void MainWindow::saveSettings()
+{
+    if (QGuiApplication::platformName() == QStringLiteral("offscreen")) {
+        return;
+    }
+    QSettings settings(QStringLiteral("EASy68K"), QStringLiteral("EASy68KLinux"));
+    settings.setValue(QStringLiteral("window/geometry"), saveGeometry());
+    settings.setValue(QStringLiteral("window/state"), saveState());
+    settings.setValue(QStringLiteral("files/recent"), m_recentFiles);
+    settings.setValue(QStringLiteral("editor/fontSize"), m_editorFontSize);
+    settings.setValue(QStringLiteral("options/exceptions"), m_exceptionsEnabled);
+    settings.setValue(QStringLiteral("options/bitfield"), m_bitfieldEnabled);
+    settings.setValue(QStringLiteral("options/xref"), m_xrefEnabled);
+    settings.setValue(QStringLiteral("options/simhalt"), m_simhaltDefault);
+    settings.setValue(QStringLiteral("options/autoTraceMs"), m_autoTraceIntervalMs);
 }
 
 void MainWindow::assembleCurrentFile(bool autoLoad)
@@ -924,6 +1431,11 @@ void MainWindow::assembleCurrentFile(bool autoLoad)
         if (!saveFileAs()) return;
     } else {
         if (!saveFile()) return;
+    }
+
+    m_assemblingTabIndex = editorTabs ? editorTabs->currentIndex() : -1;
+    if (editor) {
+        editor->clearDiagnostics();
     }
 
     pendingAutoLoad = autoLoad;
@@ -942,6 +1454,10 @@ void MainWindow::assembleCurrentFile(bool autoLoad)
     QString basePath = fi.path() + "/" + fi.completeBaseName();
     currentListingPath = basePath + ".l68";
     currentS68Path = basePath + ".s68";
+    if (m_assemblingTabIndex >= 0 && m_assemblingTabIndex < m_editorTabs.size()) {
+        m_editorTabs[m_assemblingTabIndex].s68Path = currentS68Path;
+        m_editorTabs[m_assemblingTabIndex].listingPath = currentListingPath;
+    }
 
     if (!assemblerProcess) {
         assemblerProcess = new QProcess(this);
@@ -949,7 +1465,9 @@ void MainWindow::assembleCurrentFile(bool autoLoad)
     }
 
     QStringList args;
-    args << "-o" << currentS68Path << "--listing" << currentListingPath << currentFilePath;
+    if (m_bitfieldEnabled) args << QStringLiteral("-b");
+    if (m_xrefEnabled) args << QStringLiteral("-x");
+    args << QStringLiteral("-o") << currentS68Path << QStringLiteral("--listing") << currentListingPath << currentFilePath;
 
     statusBar()->showMessage(tr("Assembling %1...").arg(fi.fileName()));
     assemblerProcess->start(asmBinary, args);
@@ -965,6 +1483,8 @@ void MainWindow::onAssemblerFinished(int exitCode, QProcess::ExitStatus /* exitS
     int warningCount = 0;
     QStringList diagnosticDetails;
     int firstErrorLine = -1;
+    QSet<int> errLines;
+    QSet<int> warnLines;
 
     QStringList lines = fullOutput.split('\n', Qt::SkipEmptyParts);
     for (const QString &line : lines) {
@@ -974,13 +1494,17 @@ void MainWindow::onAssemblerFinished(int exitCode, QProcess::ExitStatus /* exitS
         bool isSummaryLine = trimmedLine.startsWith("Assembly failed with", Qt::CaseInsensitive) ||
                              trimmedLine.startsWith("Assembly completed successfully", Qt::CaseInsensitive);
 
+        bool lineIsErr = false;
+        bool lineIsWarn = false;
         if (!isSummaryLine) {
             if (trimmedLine.contains(": ERROR:", Qt::CaseInsensitive) || trimmedLine.contains("ERROR:")) {
                 errorCount++;
+                lineIsErr = true;
                 item->setForeground(QColor(220, 38, 38));
                 diagnosticDetails.append(trimmedLine);
             } else if (trimmedLine.contains(": WARNING:", Qt::CaseInsensitive) || trimmedLine.contains("WARNING:")) {
                 warningCount++;
+                lineIsWarn = true;
                 item->setForeground(QColor(217, 119, 6));
                 diagnosticDetails.append(trimmedLine);
             }
@@ -991,14 +1515,24 @@ void MainWindow::onAssemblerFinished(int exitCode, QProcess::ExitStatus /* exitS
         if (match.hasMatch()) {
             int lineNum = match.captured(1).toInt();
             item->setData(Qt::UserRole, lineNum);
-            if (firstErrorLine < 0 && trimmedLine.contains("ERROR:", Qt::CaseInsensitive)) {
-                firstErrorLine = lineNum;
+            if (lineIsErr) {
+                errLines.insert(lineNum);
+                if (firstErrorLine < 0) firstErrorLine = lineNum;
+            } else if (lineIsWarn) {
+                warnLines.insert(lineNum);
             }
         }
     }
 
     if (exitCode != 0 && errorCount == 0) {
         errorCount = 1;
+    }
+
+    CodeEditor *targetEd = (m_assemblingTabIndex >= 0 && m_assemblingTabIndex < m_editorTabs.size())
+        ? m_editorTabs[m_assemblingTabIndex].editor
+        : editor;
+    if (targetEd) {
+        targetEd->setDiagnosticLines(errLines, warnLines);
     }
 
     if (exitCode == 0) {
@@ -1009,6 +1543,8 @@ void MainWindow::onAssemblerFinished(int exitCode, QProcess::ExitStatus /* exitS
         if (pendingAutoLoad) {
             mainTabs->setCurrentIndex(1); // Switch to Simulator tab
             simManager->loadS68(currentS68Path);
+            simManager->setExceptionsEnabled(m_exceptionsEnabled);
+            simhalt_on = m_simhaltDefault;
         }
 
         // Apply *[sim68k] listing directives after loading the S-Record so
@@ -1020,8 +1556,11 @@ void MainWindow::onAssemblerFinished(int exitCode, QProcess::ExitStatus /* exitS
         }
     } else {
         statusBar()->showMessage(tr("Assembly failed! See Build Output."), 4000);
-        if (firstErrorLine > 0 && editor) {
-            editor->highlightLine(firstErrorLine);
+        if (firstErrorLine > 0 && targetEd) {
+            if (m_assemblingTabIndex >= 0 && m_assemblingTabIndex < editorTabs->count()) {
+                editorTabs->setCurrentIndex(m_assemblingTabIndex);
+            }
+            targetEd->highlightLine(firstErrorLine);
         }
         if (QFileInfo::exists(currentListingPath)) {
             loadListing(currentListingPath);
@@ -1155,7 +1694,7 @@ void MainWindow::onSimulatorRunToCursor()
 void MainWindow::onSimulatorAutoTrace()
 {
     mainTabs->setCurrentIndex(1);
-    simManager->toggleAutoTrace();
+    simManager->toggleAutoTrace(m_autoTraceIntervalMs);
 }
 
 void MainWindow::onSimulatorPause()
@@ -1166,6 +1705,8 @@ void MainWindow::onSimulatorPause()
 void MainWindow::onSimulatorReset()
 {
     simManager->reset();
+    simManager->setExceptionsEnabled(m_exceptionsEnabled);
+    simhalt_on = m_simhaltDefault;
     if (hardwareWidget) {
         hardwareWidget->resetHardware();
     }
@@ -1193,6 +1734,8 @@ void MainWindow::onSimulatorReload()
 {
     mainTabs->setCurrentIndex(1);
     simManager->reloadProgram();
+    simManager->setExceptionsEnabled(m_exceptionsEnabled);
+    simhalt_on = m_simhaltDefault;
     if (hardwareWidget) {
         hardwareWidget->resetHardware();
     }
@@ -1214,6 +1757,8 @@ void MainWindow::onSimulatorLoadS68()
         QFileInfo fi(fileName);
         QString listCandidate = fi.path() + "/" + fi.completeBaseName() + ".l68";
         simManager->loadS68(fileName);
+        simManager->setExceptionsEnabled(m_exceptionsEnabled);
+        simhalt_on = m_simhaltDefault;
         // Load the listing after the S-Record: loadS68() calls initSim() which
         // restores default simulator options, so *[sim68k] directives must be
         // applied last or they would be lost.
@@ -1354,22 +1899,56 @@ void MainWindow::loadListing(const QString &listingPath)
     listingWidget->highlightPC(static_cast<uint32_t>(simManager->getPC()), false);
 }
 
+void MainWindow::refreshSimRightTab(QWidget *tab)
+{
+    if (!tab) return;
+    if (tab == memoryView && m_dirtyMemory) {
+        m_dirtyMemory = false;
+        memoryView->updateView();
+    } else if (tab == variablesView && m_dirtyVariables) {
+        m_dirtyVariables = false;
+        variablesView->updateVariables();
+    } else if (tab == stackView && m_dirtyStack) {
+        m_dirtyStack = false;
+        stackView->updateView();
+    } else if (tab == hardwareWidget && m_dirtyHardware) {
+        m_dirtyHardware = false;
+        hardwareWidget->updateHardware();
+    }
+}
+
 void MainWindow::onSimulatorStateChanged()
 {
     registersView->updateRegisters(simManager->getD(), simManager->getA(),
                                    simManager->getPC(), simManager->getSR(),
                                    simManager->getCycles());
-    memoryView->updateView();
-    if (variablesView) {
-        variablesView->updateVariables();
-    }
-    if (stackView) {
-        stackView->updateView();
-    }
-    if (hardwareWidget) {
-        hardwareWidget->updateHardware();
-    }
     listingWidget->highlightPC(static_cast<uint32_t>(simManager->getPC()), false);
+
+    if (simManager->isRunning()) {
+        // Selective refresh while actively running: update only visible right tab
+        // and mark others dirty for instant lazy refresh on tab switch.
+        QWidget *curTab = simRightTabs ? simRightTabs->currentWidget() : nullptr;
+        m_dirtyMemory = true;
+        m_dirtyVariables = true;
+        m_dirtyStack = true;
+        m_dirtyHardware = true;
+        refreshSimRightTab(curTab);
+    } else {
+        m_dirtyMemory = false;
+        m_dirtyVariables = false;
+        m_dirtyStack = false;
+        m_dirtyHardware = false;
+        memoryView->updateView();
+        if (variablesView) {
+            variablesView->updateVariables();
+        }
+        if (stackView) {
+            stackView->updateView();
+        }
+        if (hardwareWidget) {
+            hardwareWidget->updateHardware();
+        }
+    }
 }
 
 void MainWindow::onSimulatorHalted(const QString &reason)
@@ -1395,13 +1974,62 @@ void MainWindow::onGoToPC()
 
 void MainWindow::onFindText()
 {
-    bool ok = false;
-    QString query = QInputDialog::getText(this, tr("Find Text"), tr("Search string:"), QLineEdit::Normal, QString(), &ok);
-    if (ok && !query.isEmpty()) {
-        if (mainTabs->currentIndex() == 0) {
-            editor->find(query);
+    if (!findReplaceBar) return;
+    QString initial;
+    if (mainTabs->currentIndex() == 1) {
+        findReplaceBar->setListingWidget(listingWidget);
+    } else {
+        if (mainTabs->currentIndex() != 0) {
+            mainTabs->setCurrentIndex(0);
+        }
+        findReplaceBar->setEditor(editor);
+        if (editor) {
+            initial = editor->textCursor().selectedText();
         }
     }
+    findReplaceBar->showFind(initial);
+}
+
+void MainWindow::onReplaceText()
+{
+    if (!findReplaceBar) return;
+    if (mainTabs->currentIndex() != 0) {
+        mainTabs->setCurrentIndex(0);
+    }
+    findReplaceBar->setEditor(editor);
+    const QString initial = editor ? editor->textCursor().selectedText() : QString();
+    findReplaceBar->showReplace(initial);
+}
+
+void MainWindow::onFindNext()
+{
+    if (!findReplaceBar) return;
+    if (findReplaceBar->query().isEmpty()) {
+        onFindText();
+    } else {
+        findReplaceBar->findNext();
+    }
+}
+
+void MainWindow::onFindPrev()
+{
+    if (!findReplaceBar) return;
+    if (findReplaceBar->query().isEmpty()) {
+        onFindText();
+    } else {
+        findReplaceBar->findPrev();
+    }
+}
+
+void MainWindow::onAdvancedBreakpoints()
+{
+    BreakpointDialog dlg(simManager, this);
+    connect(&dlg, &BreakpointDialog::breakpointsUpdated, this, [this]() {
+        if (listingWidget && listingWidget->scrollArea()) {
+            listingWidget->scrollArea()->viewport()->update();
+        }
+    });
+    dlg.exec();
 }
 
 void MainWindow::onCommentLines()

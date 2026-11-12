@@ -31,11 +31,16 @@ cp "${BUILD_DIR}/easy68k-asm" AppDir/usr/bin/
 cp "${BUILD_DIR}/easy68k-sim" AppDir/usr/bin/
 cp "${BUILD_DIR}/easybin" AppDir/usr/bin/
 
-# 2. Bundle Qt6 shared libraries and platform plugins
+# 2. Bundle Qt6 shared libraries and essential Qt6 plugins
 ldd "${BUILD_DIR}/easy68k-gui" | awk '/=> \/.*libQt6|libicu|libdouble-conversion|libb2|libpcre2-16/ {print $3}' | xargs -r -I{} cp -L "{}" AppDir/usr/lib/
-for plugin_dir in /usr/lib/x86_64-linux-gnu/qt6/plugins/platforms /usr/lib64/qt6/plugins/platforms; do
-  if [ -d "$plugin_dir" ]; then
-    cp -r "$plugin_dir"/* AppDir/usr/plugins/platforms/ || true
+for qt_plugins_root in /usr/lib/x86_64-linux-gnu/qt6/plugins /usr/lib64/qt6/plugins; do
+  if [ -d "$qt_plugins_root" ]; then
+    for sub in platforms tls imageformats xcbglintegrations multimedia; do
+      if [ -d "${qt_plugins_root}/${sub}" ]; then
+        mkdir -p "AppDir/usr/plugins/${sub}"
+        cp -r "${qt_plugins_root}/${sub}/"* "AppDir/usr/plugins/${sub}/" || true
+      fi
+    done
   fi
 done
 

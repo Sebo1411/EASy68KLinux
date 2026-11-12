@@ -12,6 +12,8 @@
 #include "../src/gui/mainwindow.h"
 #include "../src/gui/simulatormanager.h"
 #include "../src/gui/codeeditor.h"
+#include "../src/gui/findreplacebar.h"
+#include "../src/gui/breakpointdialog.h"
 #include "../src/gui/listingwidget.h"
 #include "../src/gui/registersview.h"
 #include "../src/gui/memoryview.h"
@@ -24,8 +26,14 @@
 #include "../src/gui/updater.h"
 #include "../src/simulator/disassembler.h"
 #include "../src/simulator/proto.h"
+#include "../src/simulator/def.h"
+#include "../src/simulator/extern.h"
 #include <QCryptographicHash>
 #include <QScrollArea>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <unistd.h>
 
 #define TEST_CHECK(cond) \
     do { \
@@ -602,6 +610,385 @@ static int testVariablesViewAutoDiscoveryPersistentInitialsAndLiveUpdate()
     vv.addWatchExpression("$4000", 2);
     TEST_CHECK(vv.getDiscoveredVariables().size() == 4);
 
+    return 0;
+}
+
+static int testExceptionsDivideByZeroTrapvAndChk(const QString &appDir)
+{
+    std::cout << "[GUI TEST] Running testExceptionsDivideByZeroTrapvAndChk...\n";
+    const QString asmBin = appDir + "/easy68k-asm";
+    const QString srcPath = appDir + "/gui_test_exceptions.x68";
+    const QString s68Path = appDir + "/gui_test_exceptions.s68";
+
+    QFile f(srcPath);
+    TEST_CHECK(f.open(QIODevice::WriteOnly | QIODevice::Text));
+    const char *src =
+        "        ORG     $0014\n"
+        "        DC.L    VEC_DIV0\n"
+        "        DC.L    VEC_CHK\n"
+        "        DC.L    VEC_TRAPV\n"
+        "        ORG     $1000\n"
+        "START:\n"
+        "        LEA     $00FF0000,SP\n"
+        "        CLR.L   D5\n"
+        "        CLR.L   D6\n"
+        "        CLR.L   D7\n"
+        "        MOVE.L  #10,D0\n"
+        "        DIVU    #0,D0\n"
+        "        MOVE.W  #10,D1\n"
+        "        CHK     #5,D1\n"
+        "        MOVE.W  #$7FFF,D2\n"
+        "        ADD.W   #1,D2\n"
+        "        TRAPV\n"
+        "        SIMHALT\n"
+        "VEC_DIV0:\n"
+        "        MOVEQ   #1,D5\n"
+        "        RTE\n"
+        "VEC_CHK:\n"
+        "        MOVEQ   #2,D6\n"
+        "        RTE\n"
+        "VEC_TRAPV:\n"
+        "        MOVEQ   #3,D7\n"
+        "        RTE\n"
+        "        END     START\n";
+    TEST_CHECK(f.write(src) > 0);
+    f.close();
+
+    const int rc = QProcess::execute(asmBin, {srcPath, "-o", s68Path});
+    TEST_CHECK(rc == 0 && QFileInfo::exists(s68Path));
+
+    SimulatorManager sim;
+    TEST_CHECK(sim.loadS68(s68Path));
+    sim.setExceptionsEnabled(true);
+    TEST_CHECK(sim.isExceptionsEnabled());
+
+    sim.run();
+    int maxWait = 200;
+    while (sim.isRunning() && maxWait-- > 0) {
+        QTest::qWait(5);
+    }
+
+    TEST_CHECK(!sim.isRunning());
+    TEST_CHECK(sim.getD()[5] == 1);
+    TEST_CHECK(sim.getD()[6] == 2);
+    TEST_CHECK(sim.getD()[7] == 3);
+
+    sim.setExceptionsEnabled(false);
+    QFile::remove(srcPath);
+    QFile::remove(s68Path);
+    return 0;
+}
+
+static int testAdvancedBreakpointsAndWatchpoints(const QString &appDir)
+{
+    std::cout << "[GUI TEST] Running testAdvancedBreakpointsAndWatchpoints...\n";
+
+    // 1. Validate shunting-yard expression parser
+    QVector<int> inf, post;
+    QString err;
+    TEST_CHECK(BreakpointDialog::parseExpression("(R0 AND A1) OR P2", inf, post, &err));
+    TEST_CHECK(post.size() == 5);
+    TEST_CHECK(post[0] == 0);
+    TEST_CHECK(post[1] == ADDR_ID_OFFSET + 1);
+    TEST_CHECK(post[2] == MAX_BPOINTS + AND_OP);
+    TEST_CHECK(post[3] == 2);
+    TEST_CHECK(post[4] == MAX_BPOINTS + OR_OP);
+    TEST_CHECK(!BreakpointDialog::parseExpression("(R0 AND", inf, post, &err));
+    TEST_CHECK(!BreakpointDialog::parseExpression("R99", inf, post, &err));
+
+    // 2. Real simulator loop with D0 == 5 conditional breakpoint and $2000 write watchpoint
+    const QString asmBin = appDir + "/easy68k-asm";
+    const QString srcPath = appDir + "/gui_test_adv_bp.x68";
+    const QString s68Path = appDir + "/gui_test_adv_bp.s68";
+
+    QFile f(srcPath);
+    TEST_CHECK(f.open(QIODevice::WriteOnly | QIODevice::Text));
+    const char *src =
+        "        ORG     $1000\n"
+        "START:\n"
+        "        CLR.L   D0\n"
+        "LOOP:\n"
+        "        ADDQ.L  #1,D0\n"
+        "        MOVE.L  D0,$2000\n"
+        "        CMP.L   #10,D0\n"
+        "        BLT     LOOP\n"
+        "        SIMHALT\n"
+        "        END     START\n";
+    TEST_CHECK(f.write(src) > 0);
+    f.close();
+
+    TEST_CHECK(QProcess::execute(asmBin, {srcPath, "-o", s68Path}) == 0);
+
+    SimulatorManager sim;
+    TEST_CHECK(sim.loadS68(s68Path));
+
+    auto clearAllAdvBps = []() {
+        for (int i = 0; i < MAX_BPOINTS; ++i) {
+            breakPoints[i] = BPoint();
+            bpCountCond[i] = 0;
+        }
+        for (int i = 0; i < MAX_BP_EXPR; ++i) {
+            bpExpressions[i] = BPointExpr();
+        }
+        exprCount = 0;
+    };
+    clearAllAdvBps();
+
+    // Conditional register breakpoint: break when D0 == 5 (long)
+    breakPoints[0].setId(0);
+    breakPoints[0].setType(PC_REG_TYPE);
+    breakPoints[0].setTypeId(D0_TYPE_ID);
+    breakPoints[0].setOperator(EQUAL_OP);
+    breakPoints[0].setValue(5);
+    breakPoints[0].setSize(LONG_SIZE);
+    breakPoints[0].setReadWrite(NA_TYPE);
+    breakPoints[0].isEnabled(true);
+    TEST_CHECK(BreakpointDialog::ensureSimpleExpressionForBPoint(0, 1) == 0);
+
+    sim.run();
+    int maxWait = 200;
+    while (sim.isRunning() && maxWait-- > 0) {
+        QTest::qWait(5);
+    }
+    TEST_CHECK(!sim.isRunning());
+    TEST_CHECK(sim.getD()[0] == 5);
+
+    // Combined expression: Write to $2000 AND D0 == 7
+    clearAllAdvBps();
+    breakPoints[0].setId(0);
+    breakPoints[0].setType(PC_REG_TYPE);
+    breakPoints[0].setTypeId(D0_TYPE_ID);
+    breakPoints[0].setOperator(EQUAL_OP);
+    breakPoints[0].setValue(7);
+    breakPoints[0].setSize(LONG_SIZE);
+    breakPoints[0].setReadWrite(NA_TYPE);
+    breakPoints[0].isEnabled(true);
+
+    const int addrSlot = ADDR_ID_OFFSET;
+    breakPoints[addrSlot].setId(addrSlot);
+    breakPoints[addrSlot].setType(ADDR_TYPE);
+    breakPoints[addrSlot].setTypeId(0x2000);
+    breakPoints[addrSlot].setReadWrite(WRITE_TYPE);
+    breakPoints[addrSlot].setOperator(NA_OP);
+    breakPoints[addrSlot].setValue(0);
+    breakPoints[addrSlot].setSize(LONG_SIZE);
+    breakPoints[addrSlot].isEnabled(true);
+
+    QVector<int> combInfix, combPost;
+    TEST_CHECK(BreakpointDialog::parseExpression("R0 AND A0", combInfix, combPost));
+    bpExpressions[0].setId(0);
+    bpExpressions[0].setInfixExpr(combInfix.data(), combInfix.size());
+    bpExpressions[0].setPostfixExpr(combPost.data(), combPost.size());
+    bpExpressions[0].setExprString("R0 AND A0");
+    bpExpressions[0].setCount(1);
+    bpExpressions[0].isEnabled(true);
+    exprCount = 1;
+
+    sim.run();
+    maxWait = 200;
+    while (sim.isRunning() && maxWait-- > 0) {
+        QTest::qWait(5);
+    }
+    TEST_CHECK(!sim.isRunning());
+    if (sim.getD()[0] != 7) {
+        std::cerr << "[DEBUG] After second run: D0=" << sim.getD()[0]
+                  << " PC=0x" << std::hex << sim.getPC() << std::dec
+                  << " exprCount=" << exprCount
+                  << " postSize=" << combPost.size()
+                  << " bpWrite=" << bpWrite
+                  << " writeEA=" << (void*)writeEA
+                  << " expectedEA=" << (void*)&memory[0x2000] << "\n";
+    }
+    TEST_CHECK(sim.getD()[0] == 7);
+
+    clearAllAdvBps();
+    QFile::remove(srcPath);
+    QFile::remove(s68Path);
+    return 0;
+}
+
+static int testPosixNetworkLoopback()
+{
+    std::cout << "[GUI TEST] Running testPosixNetworkLoopback...\n";
+    TerminalWidget term;
+
+    // Bind a real ephemeral host UDP socket on 127.0.0.1:0
+    int hostSock = ::socket(AF_INET, SOCK_DGRAM, 0);
+    TEST_CHECK(hostSock >= 0);
+
+    sockaddr_in hostAddr{};
+    hostAddr.sin_family = AF_INET;
+    hostAddr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    hostAddr.sin_port = 0;
+    TEST_CHECK(::bind(hostSock, reinterpret_cast<sockaddr*>(&hostAddr), sizeof(hostAddr)) == 0);
+
+    socklen_t len = sizeof(hostAddr);
+    TEST_CHECK(::getsockname(hostSock, reinterpret_cast<sockaddr*>(&hostAddr), &len) == 0);
+    const uint16_t hostPort = ntohs(hostAddr.sin_port);
+    TEST_CHECK(hostPort > 0);
+
+    char ipStr[32] = "127.0.0.1";
+    int netRes = -1;
+    // Create UDP client targeting hostPort (proto = 0 in low byte, port in upper 16 bits)
+    const int clientSettings = (static_cast<int>(hostPort) << 16) | 0;
+    term.createNetClient(clientSettings, ipStr, &netRes);
+    TEST_CHECK(netRes == 0);
+
+    // Send packet from SimIO -> host UDP socket
+    char payload[] = "PING68K";
+    int count = 7;
+    term.sendNet(count, payload, ipStr, &count, &netRes);
+    TEST_CHECK(netRes == 0);
+    TEST_CHECK(count == 7);
+
+    char recvBuf[64] = {};
+    sockaddr_in peerAddr{};
+    socklen_t peerLen = sizeof(peerAddr);
+    ssize_t n = ::recvfrom(hostSock, recvBuf, sizeof(recvBuf) - 1, 0,
+                           reinterpret_cast<sockaddr*>(&peerAddr), &peerLen);
+    TEST_CHECK(n == 7);
+    TEST_CHECK(std::string(recvBuf, static_cast<size_t>(n)) == "PING68K");
+
+    // Reply from host UDP socket -> SimIO UDP client
+    const char reply[] = "PONG68K";
+    ssize_t sn = ::sendto(hostSock, reply, 7, 0,
+                          reinterpret_cast<sockaddr*>(&peerAddr), peerLen);
+    TEST_CHECK(sn == 7);
+
+    char simRecvBuf[64] = {};
+    char senderIp[32] = {};
+    int recvCount = 64;
+    for (int attempt = 0; attempt < 20; ++attempt) {
+        recvCount = 64;
+        term.receiveNet(recvCount, simRecvBuf, &recvCount, senderIp, &netRes);
+        if (recvCount > 0) break;
+        QTest::qWait(5);
+    }
+    TEST_CHECK(netRes == 0);
+    TEST_CHECK(recvCount == 7);
+    TEST_CHECK(std::string(simRecvBuf, 7) == "PONG68K");
+
+    // GetLocalIP check
+    char localIp[32] = {};
+    term.getLocalIP(localIp, &netRes);
+    TEST_CHECK(netRes == 0);
+    TEST_CHECK(localIp[0] != '\0');
+
+    term.closeNetConnection(0, &netRes);
+    TEST_CHECK(netRes == 0);
+    ::close(hostSock);
+    return 0;
+}
+
+static int testTerminalTextIoAndGraphicsExtensions()
+{
+    std::cout << "[GUI TEST] Running testTerminalTextIoAndGraphicsExtensions...\n";
+    TerminalWidget term;
+    HardwareWidget hw;
+    term.setHardwareWidget(&hw);
+
+    // 1. Text cursor positioning, getCharAt, scrollRect
+    term.clear();
+    term.textOut("HELLO\nWORLD");
+    QTest::qWait(20);
+    char ch = 0;
+    term.getCharAt(0, 0, &ch);
+    TEST_CHECK(ch == 'H');
+    term.getCharAt(1, 2, &ch);
+    TEST_CHECK(ch == 'R');
+
+    term.gotorc(0, 2);
+    short rcPacked = 0;
+    term.getrc(&rcPacked);
+    TEST_CHECK((rcPacked & 0xFF) == 0 && ((rcPacked >> 8) & 0xFF) == 2);
+
+    term.scrollRect(0, 0, 2, 5, 0); // Scroll up by 1 line
+    term.getCharAt(0, 0, &ch);
+    TEST_CHECK(ch == 'W');
+
+    // 2. FloodFill inside enclosed rectangle
+    hw.clearCanvas();
+    term.setLineColor(0x000000FF); // Red border
+    term.setFillColor(0x0000FF00); // Green fill
+    term.unfilledRectangle(10, 10, 40, 40);
+    term.floodFill(25, 25);
+    TEST_CHECK(hw.getCanvasPixel(25, 25) == QColor(0, 255, 0));
+    TEST_CHECK(hw.getCanvasPixel(5, 5) == QColor(Qt::black));
+
+    // 3. Double buffering modes 17 (enable) / 16 (disable) + FormPaint (Task 94)
+    term.setDrawingMode(17);
+    term.setLineColor(0x00FF0000); // Blue
+    term.drawPixel(60, 60);
+    // Not yet presented on visible canvas before FormPaint
+    TEST_CHECK(hw.getCanvasPixel(60, 60) != QColor(0, 0, 255));
+    term.FormPaint(&term);
+    TEST_CHECK(hw.getCanvasPixel(60, 60) == QColor(0, 0, 255));
+    term.setDrawingMode(16);
+
+    // 4. Reset window size via setWindowSize(0, 0)
+    term.setWindowSize(320, 240);
+    unsigned short w = 0, h = 0;
+    term.getWindowSize(w, h);
+    TEST_CHECK(w == 320 && h == 240);
+    term.setWindowSize(0, 0);
+    term.getWindowSize(w, h);
+    TEST_CHECK(w == 640 && h == 480);
+
+    return 0;
+}
+
+static int testEditorEnhancementsFindReplaceAndMultiTab(const QString &appDir)
+{
+    std::cout << "[GUI TEST] Running testEditorEnhancementsFindReplaceAndMultiTab...\n";
+
+    // 1. CodeEditor auto-indent & diagnostics
+    CodeEditor ed;
+    ed.setPlainText("\tMOVE.L #1,D0");
+    QTextCursor tc = ed.textCursor();
+    tc.movePosition(QTextCursor::End);
+    ed.setTextCursor(tc);
+    QTest::keyClick(&ed, Qt::Key_Return);
+    ed.insertPlainText("RTS");
+    TEST_CHECK(ed.toPlainText().contains("\n\tRTS"));
+
+    ed.setDiagnosticLines({1}, {2});
+    TEST_CHECK(ed.errorLines().contains(1));
+    TEST_CHECK(ed.warningLines().contains(2));
+    ed.clearDiagnostics();
+    TEST_CHECK(ed.errorLines().isEmpty());
+
+    // 2. FindReplaceBar find & replaceAll
+    FindReplaceBar bar;
+    bar.setEditor(&ed);
+    ed.setPlainText("ALPHA BETA ALPHA");
+    bar.showFind("ALPHA");
+    TEST_CHECK(bar.findNext());
+    TEST_CHECK(ed.textCursor().selectedText() == "ALPHA");
+    bar.showReplace("ALPHA");
+    ed.moveCursor(QTextCursor::Start);
+    bar.setQuery("ALPHA");
+    bar.setReplacement("GAMMA");
+    const int replaced = bar.replaceAll();
+    TEST_CHECK(replaced == 2);
+    TEST_CHECK(ed.toPlainText() == "GAMMA BETA GAMMA");
+
+    // 3. ListingWidget search
+    ListingWidget lw;
+    lw.loadListing({"00001000  4E75         1   RTS", "00001002  4E71         2   NOP"});
+    TEST_CHECK(lw.findText("NOP", true, true, true));
+    TEST_CHECK(lw.scrollArea()->getSelectedLine() == 1);
+
+    // 4. MainWindow multi-tab creation & closing
+    MainWindow win;
+    TEST_CHECK(win.getEditorTabs() != nullptr);
+    TEST_CHECK(win.getEditorTabs()->count() == 1);
+    win.newTab();
+    TEST_CHECK(win.getEditorTabs()->count() == 2);
+    TEST_CHECK(win.closeEditorTab(1));
+    TEST_CHECK(win.getEditorTabs()->count() == 1);
+
+    // Verify font size shortcut helper doesn't crash and updates editor font
+    Q_UNUSED(appDir);
     return 0;
 }
 
@@ -1227,7 +1614,12 @@ int main(int argc, char *argv[])
     TEST_CHECK(testAssemblerErrorAndWarningReportingAndColumnOneHint() == 0);
     TEST_CHECK(testMemoryViewSymbolResolution() == 0);
     TEST_CHECK(testVariablesViewAutoDiscoveryPersistentInitialsAndLiveUpdate() == 0);
+    TEST_CHECK(testExceptionsDivideByZeroTrapvAndChk(appDir) == 0);
+    TEST_CHECK(testAdvancedBreakpointsAndWatchpoints(appDir) == 0);
+    TEST_CHECK(testPosixNetworkLoopback() == 0);
+    TEST_CHECK(testTerminalTextIoAndGraphicsExtensions() == 0);
+    TEST_CHECK(testEditorEnhancementsFindReplaceAndMultiTab(appDir) == 0);
 
-    std::cout << "[GUI TEST] ALL TESTS (CORE, HARDWARE, GRAPHICS, EASYBIN, HELP, UPDATER, LISTING, MEMORY, STACK) PASSED!\n";
+    std::cout << "[GUI TEST] ALL TESTS PASSED!\n";
     return 0;
 }

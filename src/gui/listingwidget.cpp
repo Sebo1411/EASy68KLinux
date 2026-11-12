@@ -563,3 +563,46 @@ void ListingWidget::setSimulatorManager(SimulatorManager *sm)
 {
     area->setSimulatorManager(sm);
 }
+
+bool ListingScrollArea::findText(const QString &query, bool forward,
+                                 bool caseSensitive, bool wholeWord)
+{
+    if (query.isEmpty() || listingLines.isEmpty()) return false;
+
+    const int n = listingLines.size();
+    QString pattern = QRegularExpression::escape(query);
+    if (wholeWord) {
+        pattern = QStringLiteral("\\b") + pattern + QStringLiteral("\\b");
+    }
+    const QRegularExpression::PatternOptions opts =
+        caseSensitive ? QRegularExpression::NoPatternOption : QRegularExpression::CaseInsensitiveOption;
+    const QRegularExpression re(pattern, opts);
+
+    int start = selectedLine;
+    if (start < 0 || start >= n) {
+        start = forward ? -1 : n;
+    }
+
+    for (int step = 1; step <= n; ++step) {
+        const int idx = forward
+            ? ((start + step) % n)
+            : ((start - step + n * 2) % n);
+        if (re.match(listingLines[idx]).hasMatch()) {
+            selectedLine = idx;
+            const int firstVis = getFirstVisibleLine();
+            const int lastVis = getLastVisibleLine();
+            if (idx < firstVis || idx > lastVis) {
+                verticalScrollBar()->setValue(std::max(0, idx - 2));
+            }
+            viewport()->update();
+            return true;
+        }
+    }
+    return false;
+}
+
+bool ListingWidget::findText(const QString &query, bool forward,
+                             bool caseSensitive, bool wholeWord)
+{
+    return area->findText(query, forward, caseSensitive, wholeWord);
+}

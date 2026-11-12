@@ -57,32 +57,18 @@ int MemoryGridArea::getVisibleRowCount() const
 void MemoryGridArea::clampAndSnapCursor()
 {
     int numRows = getVisibleRowCount();
-    cursorRow = std::clamp(cursorRow, 0, numRows - 1);
-
-    if (cursorCol < HEX_LEFT) {
-        cursorCol = HEX_LEFT;
-    } else if (cursorCol <= HEX_RIGHT) {
-        // In hex area: columns are (HEX_LEFT + b*3) and (HEX_LEFT + b*3 + 1), space at (HEX_LEFT + b*3 + 2)
-        int offset = cursorCol - HEX_LEFT;
-        if (offset % 3 == 2) {
-            cursorCol++;
-            if (cursorCol > HEX_RIGHT) {
-                cursorCol = ASC_LEFT;
-            }
-        }
-    } else if (cursorCol < ASC_LEFT) {
-        cursorCol = ASC_LEFT;
-    } else if (cursorCol > ASC_RIGHT) {
-        cursorCol = ASC_RIGHT;
-    }
+    m_cursorFsm.row = std::clamp(m_cursorFsm.row, 0, numRows - 1);
+    cursorRow = m_cursorFsm.row;
+    cursorCol = m_cursorFsm.toScreenColumn();
 }
 
 void MemoryGridArea::setCursorPosition(int r, int c)
 {
-    cursorRow = r;
-    cursorCol = c;
+    int numRows = getVisibleRowCount();
+    m_cursorFsm = MemoryCursorFSM::fromScreenCoordinates(r, c, numRows);
+    cursorRow = m_cursorFsm.row;
+    cursorCol = m_cursorFsm.toScreenColumn();
     cursorVisible = true;
-    clampAndSnapCursor();
     update();
 }
 
@@ -106,9 +92,10 @@ void MemoryGridArea::mousePressEvent(QMouseEvent *event)
         (void)colStart;
     }
 
-    cursorRow = r;
-    cursorCol = c;
-    clampAndSnapCursor();
+    int numRows = getVisibleRowCount();
+    m_cursorFsm = MemoryCursorFSM::fromScreenCoordinates(r, c, numRows);
+    cursorRow = m_cursorFsm.row;
+    cursorCol = m_cursorFsm.toScreenColumn();
     update();
 }
 
@@ -139,106 +126,47 @@ bool MemoryGridArea::handleKeyEdit(int key, QChar ch)
 
     // Arrow navigation
     if (key == Qt::Key_Up) {
-        cursorRow--;
-        if (cursorRow < 0) {
-            cursorRow = 0;
-            if (currentAddress >= 16) {
-                setBaseAddress(currentAddress - 16);
-            }
+        uint32_t prevAddr = currentAddress;
+        m_cursorFsm.moveUp(currentAddress);
+        if (currentAddress != prevAddr) {
+            emit baseAddressChanged(currentAddress);
         }
         clampAndSnapCursor();
         update();
         return true;
     }
     if (key == Qt::Key_Down) {
-        cursorRow++;
-        if (cursorRow >= numRows) {
-            cursorRow = numRows - 1;
-            if (currentAddress + 16 < memorySize) {
-                setBaseAddress(currentAddress + 16);
-            }
+        uint32_t prevAddr = currentAddress;
+        m_cursorFsm.moveDown(numRows, currentAddress, memorySize);
+        if (currentAddress != prevAddr) {
+            emit baseAddressChanged(currentAddress);
         }
         clampAndSnapCursor();
         update();
         return true;
     }
     if (key == Qt::Key_Left || key == Qt::Key_Backspace) {
-        if (cursorCol >= ASC_LEFT) {
-            cursorCol--;
-            if (cursorCol < ASC_LEFT) {
-                if (cursorRow > 0) {
-                    cursorRow--;
-                    cursorCol = ASC_RIGHT;
-                } else if (currentAddress >= 16) {
-                    setBaseAddress(currentAddress - 16);
-                    cursorCol = ASC_RIGHT;
-                } else {
-                    cursorCol = HEX_RIGHT;
-                }
-            }
-        } else {
-            cursorCol--;
-            if (cursorCol >= HEX_LEFT && ((cursorCol - HEX_LEFT) % 3) == 2) {
-                cursorCol--; // Skip space leftward to land on previous byte's low nybble
-            }
-            if (cursorCol < HEX_LEFT) {
-                if (cursorRow > 0) {
-                    cursorRow--;
-                    cursorCol = HEX_RIGHT;
-                } else if (currentAddress >= 16) {
-                    setBaseAddress(currentAddress - 16);
-                    cursorCol = HEX_RIGHT;
-                } else {
-                    cursorCol = HEX_LEFT;
-                }
-            }
+        uint32_t prevAddr = currentAddress;
+        m_cursorFsm.moveLeft(numRows, currentAddress);
+        if (currentAddress != prevAddr) {
+            emit baseAddressChanged(currentAddress);
         }
         clampAndSnapCursor();
         update();
         return true;
     }
     if (key == Qt::Key_Right) {
-        if (cursorCol <= HEX_RIGHT) {
-            cursorCol++;
-            if (cursorCol <= HEX_RIGHT && ((cursorCol - HEX_LEFT) % 3) == 2) {
-                cursorCol++; // Skip space rightward to land on next byte's high nybble
-            }
-            if (cursorCol > HEX_RIGHT) {
-                cursorCol = HEX_LEFT;
-                cursorRow++;
-                if (cursorRow >= numRows) {
-                    cursorRow = numRows - 1;
-                    if (currentAddress + 16 < memorySize) {
-                        setBaseAddress(currentAddress + 16);
-                    }
-                }
-            }
-        } else {
-            cursorCol++;
-            if (cursorCol > ASC_RIGHT) {
-                cursorCol = ASC_LEFT;
-                cursorRow++;
-                if (cursorRow >= numRows) {
-                    cursorRow = numRows - 1;
-                    if (currentAddress + 16 < memorySize) {
-                        setBaseAddress(currentAddress + 16);
-                    }
-                }
-            }
+        uint32_t prevAddr = currentAddress;
+        m_cursorFsm.moveRight(numRows, currentAddress, memorySize);
+        if (currentAddress != prevAddr) {
+            emit baseAddressChanged(currentAddress);
         }
         clampAndSnapCursor();
         update();
         return true;
     }
     if (key == Qt::Key_Tab) {
-        // Toggle between Hex and ASCII for the same byte
-        if (cursorCol <= HEX_RIGHT) {
-            int byteIdx = (cursorCol - HEX_LEFT) / 3;
-            cursorCol = ASC_LEFT + byteIdx;
-        } else {
-            int byteIdx = cursorCol - ASC_LEFT;
-            cursorCol = HEX_LEFT + byteIdx * 3;
-        }
+        m_cursorFsm.toggleRegion();
         clampAndSnapCursor();
         update();
         return true;
@@ -259,7 +187,7 @@ bool MemoryGridArea::handleKeyEdit(int key, QChar ch)
     }
 
     // Hex editing
-    if (cursorCol <= HEX_RIGHT) {
+    if (m_cursorFsm.substate != MemEditSubstate::AsciiByte) {
         char c = ch.toUpper().toLatin1();
         uint8_t nybble = 0;
         if (c >= '0' && c <= '9') {
@@ -270,13 +198,10 @@ bool MemoryGridArea::handleKeyEdit(int key, QChar ch)
             return false;
         }
 
-        int byteIndex = (cursorCol - HEX_LEFT) / 3;
-        bool isLowNybble = ((cursorCol - HEX_LEFT) % 3) == 1;
-        uint32_t addr = currentAddress + cursorRow * 16 + byteIndex;
-
+        uint32_t addr = currentAddress + m_cursorFsm.row * 16 + m_cursorFsm.byteIndex;
         if (addr < memorySize) {
             uint8_t origByte = static_cast<uint8_t>(memoryPtr[addr]);
-            if (isLowNybble) {
+            if (m_cursorFsm.substate == MemEditSubstate::HexLowNybble) {
                 origByte = (origByte & 0xF0) | nybble;
             } else {
                 origByte = (origByte & 0x0F) | (nybble << 4);
@@ -284,20 +209,10 @@ bool MemoryGridArea::handleKeyEdit(int key, QChar ch)
             memoryPtr[addr] = static_cast<char>(origByte);
             emit memoryModified(addr);
 
-            // Advance cursor
-            cursorCol++;
-            if ((cursorCol - HEX_LEFT) % 3 == 2) {
-                cursorCol++;
-            }
-            if (cursorCol > HEX_RIGHT) {
-                cursorCol = HEX_LEFT;
-                cursorRow++;
-                if (cursorRow >= numRows) {
-                    cursorRow = numRows - 1;
-                    if (currentAddress + 16 < memorySize) {
-                        setBaseAddress(currentAddress + 16);
-                    }
-                }
+            uint32_t prevAddr = currentAddress;
+            m_cursorFsm.moveRight(numRows, currentAddress, memorySize);
+            if (currentAddress != prevAddr) {
+                emit baseAddressChanged(currentAddress);
             }
             clampAndSnapCursor();
             update();
@@ -305,24 +220,17 @@ bool MemoryGridArea::handleKeyEdit(int key, QChar ch)
         }
     }
     // ASCII editing
-    else if (cursorCol >= ASC_LEFT && cursorCol <= ASC_RIGHT) {
+    else if (m_cursorFsm.substate == MemEditSubstate::AsciiByte) {
         if (ch.isPrint()) {
-            int byteIndex = cursorCol - ASC_LEFT;
-            uint32_t addr = currentAddress + cursorRow * 16 + byteIndex;
+            uint32_t addr = currentAddress + m_cursorFsm.row * 16 + m_cursorFsm.byteIndex;
             if (addr < memorySize) {
                 memoryPtr[addr] = static_cast<char>(ch.toLatin1());
                 emit memoryModified(addr);
 
-                cursorCol++;
-                if (cursorCol > ASC_RIGHT) {
-                    cursorCol = ASC_LEFT;
-                    cursorRow++;
-                    if (cursorRow >= numRows) {
-                        cursorRow = numRows - 1;
-                        if (currentAddress + 16 < memorySize) {
-                            setBaseAddress(currentAddress + 16);
-                        }
-                    }
+                uint32_t prevAddr = currentAddress;
+                m_cursorFsm.moveRight(numRows, currentAddress, memorySize);
+                if (currentAddress != prevAddr) {
+                    emit baseAddressChanged(currentAddress);
                 }
                 clampAndSnapCursor();
                 update();

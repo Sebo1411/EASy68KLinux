@@ -21,6 +21,7 @@
 #include "../src/gui/easybinwidget.h"
 #include "../src/gui/helpwidget.h"
 #include "../src/gui/updater.h"
+#include "../src/simulator/proto.h"
 #include <QCryptographicHash>
 
 #define TEST_CHECK(cond) \
@@ -35,6 +36,295 @@ extern int seg7loc, LEDloc, switchLoc, pbLoc;
 extern int irq;
 extern char *memory;
 extern bool simhalt_on;
+
+struct InstRecRef {
+    int mask;
+    int val;
+    char name[13];
+};
+extern int offsets[];
+extern struct InstRecRef inst_arr[];
+
+static int testSimExecFsmTransitionsAndInvariants()
+{
+    std::cout << "[GUI TEST] Running testSimExecFsmTransitionsAndInvariants...\n";
+    SimulatorManager sim;
+
+    // Invariant at start: Unloaded
+    TEST_CHECK(sim.execState() == SimExecState::Unloaded);
+    TEST_CHECK(!sim.isLoaded());
+    TEST_CHECK(!sim.isRunning());
+
+    // 1. Unloaded -> IdleHalted via LoadSuccess
+    sim.applyExecEvent(SimExecEvent::LoadSuccess);
+    TEST_CHECK(sim.execState() == SimExecState::IdleHalted);
+    TEST_CHECK(sim.isLoaded());
+    TEST_CHECK(!sim.isRunning());
+
+    // 2. IdleHalted -> SteppingInto via CmdTraceInto
+    sim.applyExecEvent(SimExecEvent::CmdTraceInto);
+    TEST_CHECK(sim.execState() == SimExecState::SteppingInto);
+    TEST_CHECK(sim.isLoaded());
+
+    // 3. SteppingInto -> Paused via StepCompleted
+    sim.applyExecEvent(SimExecEvent::StepCompleted);
+    TEST_CHECK(sim.execState() == SimExecState::Paused);
+    TEST_CHECK(sim.isLoaded());
+    TEST_CHECK(!sim.isRunning());
+
+    // 4. Paused -> SteppingOver via CmdStepOver
+    sim.applyExecEvent(SimExecEvent::CmdStepOver);
+    TEST_CHECK(sim.execState() == SimExecState::SteppingOver);
+    TEST_CHECK(sim.isLoaded());
+
+    // 5. SteppingOver -> RunningContinuous via CmdRun
+    sim.applyExecEvent(SimExecEvent::CmdRun);
+    TEST_CHECK(sim.execState() == SimExecState::RunningContinuous);
+    TEST_CHECK(sim.isLoaded());
+    TEST_CHECK(sim.isRunning());
+
+    // 6. RunningContinuous -> WaitingTerminalInput via InputRequested
+    sim.applyExecEvent(SimExecEvent::InputRequested);
+    TEST_CHECK(sim.execState() == SimExecState::WaitingTerminalInput);
+    TEST_CHECK(sim.isLoaded());
+    TEST_CHECK(!sim.isRunning());
+
+    // 7. WaitingTerminalInput -> IdleHalted via SimHaltHit
+    sim.applyExecEvent(SimExecEvent::SimHaltHit);
+    TEST_CHECK(sim.execState() == SimExecState::IdleHalted);
+    TEST_CHECK(sim.isLoaded());
+    TEST_CHECK(!sim.isRunning());
+
+    return 0;
+}
+
+static int testOpcodeDecodeLutExhaustive64kEquivalence()
+{
+    std::cout << "[GUI TEST] Running testOpcodeDecodeLutExhaustive64kEquivalence (65,536 opcodes)...\n";
+
+    auto referenceDecode = [](uint16_t op) -> int {
+        int start = offsets[(op >> 12) & 0x0F];
+        int finish = offsets[((op >> 12) & 0x0F) + 1] - 1;
+        for (int i = start; i <= finish; ++i) {
+            if ((op & ~static_cast<uint32_t>(inst_arr[i].mask)) == static_cast<uint32_t>(inst_arr[i].val)) {
+                return i;
+            }
+        }
+        return -1;
+    };
+
+    for (uint32_t op = 0; op <= 0xFFFF; ++op) {
+        uint16_t opcode = static_cast<uint16_t>(op);
+        int refIdx = referenceDecode(opcode);
+        int lutIdx = decodeOpcodePrimaryIndex(opcode);
+        TEST_CHECK(refIdx == lutIdx);
+    }
+
+    return 0;
+}
+
+static int testMemoryCursorFsmNavigationAndColumnMapping()
+{
+    std::cout << "[GUI TEST] Running testMemoryCursorFsmNavigationAndColumnMapping...\n";
+    MemoryCursorFSM fsm;
+    uint32_t baseAddress = 0x00001000;
+    const int maxRows = 32;
+
+    fsm.row = 0;
+    fsm.byteIndex = 0;
+    fsm.substate = MemEditSubstate::HexHighNybble;
+
+    for (int step = 0; step < 32; ++step) {
+        int expectedByte = step / 2;
+        MemEditSubstate expectedSubstate = (step % 2 == 0)
+            ? MemEditSubstate::HexHighNybble
+            : MemEditSubstate::HexLowNybble;
+
+        TEST_CHECK(fsm.byteIndex == expectedByte);
+        TEST_CHECK(fsm.substate == expectedSubstate);
+
+        int col = fsm.toScreenColumn();
+        int offset = col - 10;
+        TEST_CHECK(offset % 3 != 2);
+        TEST_CHECK(col == 10 + expectedByte * 3 + static_cast<int>(expectedSubstate));
+
+        if (step < 31) {
+            fsm.moveRight(maxRows, baseAddress);
+        }
+    }
+
+    TEST_CHECK(fsm.row == 0 && fsm.byteIndex == 15 && fsm.substate == MemEditSubstate::HexLowNybble);
+    fsm.moveRight(maxRows, baseAddress);
+    TEST_CHECK(fsm.row == 1 && fsm.byteIndex == 0 && fsm.substate == MemEditSubstate::HexHighNybble);
+
+    fsm.row = maxRows - 1;
+    fsm.byteIndex = 15;
+    fsm.substate = MemEditSubstate::HexLowNybble;
+    uint32_t oldBase = baseAddress;
+    fsm.moveRight(maxRows, baseAddress, 0x01000000);
+    TEST_CHECK(baseAddress == oldBase + 16);
+    TEST_CHECK(fsm.row == maxRows - 1 && fsm.byteIndex == 0 && fsm.substate == MemEditSubstate::HexHighNybble);
+
+    fsm.row = 0;
+    fsm.byteIndex = 0;
+    fsm.substate = MemEditSubstate::HexHighNybble;
+    oldBase = baseAddress;
+    fsm.moveLeft(maxRows, baseAddress);
+    TEST_CHECK(baseAddress == oldBase - 16);
+    TEST_CHECK(fsm.row == 0 && fsm.byteIndex == 15 && fsm.substate == MemEditSubstate::HexLowNybble);
+
+    for (int b = 0; b < 16; ++b) {
+        fsm.byteIndex = b;
+        fsm.substate = MemEditSubstate::HexHighNybble;
+        fsm.toggleRegion();
+        TEST_CHECK(fsm.substate == MemEditSubstate::AsciiByte);
+        TEST_CHECK(fsm.byteIndex == b);
+        TEST_CHECK(fsm.toScreenColumn() == 58 + b);
+
+        fsm.toggleRegion();
+        TEST_CHECK(fsm.substate == MemEditSubstate::HexHighNybble);
+        TEST_CHECK(fsm.byteIndex == b);
+    }
+
+    for (int r = 0; r < maxRows; ++r) {
+        for (int b = 0; b < 16; ++b) {
+            fsm.row = r;
+            fsm.byteIndex = b;
+
+            fsm.substate = MemEditSubstate::HexHighNybble;
+            int colHi = fsm.toScreenColumn();
+            TEST_CHECK((colHi - 10) % 3 == 0);
+
+            fsm.substate = MemEditSubstate::HexLowNybble;
+            int colLo = fsm.toScreenColumn();
+            TEST_CHECK((colLo - 10) % 3 == 1);
+
+            fsm.substate = MemEditSubstate::AsciiByte;
+            int colAsc = fsm.toScreenColumn();
+            TEST_CHECK(colAsc >= 58 && colAsc <= 73);
+        }
+    }
+
+    return 0;
+}
+
+static int testSRecordParserFsmValidAndCorruptedRecords()
+{
+    std::cout << "[GUI TEST] Running testSRecordParserFsmValidAndCorruptedRecords...\n";
+    SRecordLineFSM fsm;
+
+    // 1. Valid S0, S1, S2, S3, S7, S8, S9 records
+    const char *kValidS0 = "S021000036384B50524F47202020323043524541544544204259204541535936384B6D\n";
+    TEST_CHECK(fsm.parseLine(kValidS0) == true);
+    TEST_CHECK(fsm.state == SRecordLineState::Complete);
+    TEST_CHECK(fsm.recordType == '0');
+    TEST_CHECK(fsm.checksumValid == true);
+
+    const char *kValidS1 = "S1231000307C40003010E048314000023010E148E048314000040C68001A00026600001CED\n";
+    TEST_CHECK(fsm.parseLine(kValidS1) == true);
+    TEST_CHECK(fsm.state == SRecordLineState::Complete);
+    TEST_CHECK(fsm.recordType == '1');
+    TEST_CHECK(fsm.address == 0x1000);
+    TEST_CHECK(fsm.payload.size() == 32);
+    TEST_CHECK(fsm.checksumValid == true);
+
+    const char *kValidS2 = "S20800100012344E75DE\n";
+    TEST_CHECK(fsm.parseLine(kValidS2) == true);
+    TEST_CHECK(fsm.state == SRecordLineState::Complete);
+    TEST_CHECK(fsm.recordType == '2');
+    TEST_CHECK(fsm.address == 0x001000);
+    TEST_CHECK(fsm.payload.size() == 4);
+    TEST_CHECK(fsm.checksumValid == true);
+
+    const char *kValidS3 = "S3090000100012344E75DD\n";
+    TEST_CHECK(fsm.parseLine(kValidS3) == true);
+    TEST_CHECK(fsm.state == SRecordLineState::Complete);
+    TEST_CHECK(fsm.recordType == '3');
+    TEST_CHECK(fsm.address == 0x00001000);
+    TEST_CHECK(fsm.payload.size() == 4);
+    TEST_CHECK(fsm.checksumValid == true);
+
+    const char *kValidS7 = "S70500001000EA\n";
+    TEST_CHECK(fsm.parseLine(kValidS7) == true);
+    TEST_CHECK(fsm.state == SRecordLineState::Complete);
+    TEST_CHECK(fsm.recordType == '7');
+    TEST_CHECK(fsm.address == 0x00001000);
+    TEST_CHECK(fsm.checksumValid == true);
+
+    const char *kValidS8 = "S804001000EB\n";
+    TEST_CHECK(fsm.parseLine(kValidS8) == true);
+    TEST_CHECK(fsm.state == SRecordLineState::Complete);
+    TEST_CHECK(fsm.recordType == '8');
+    TEST_CHECK(fsm.address == 0x001000);
+    TEST_CHECK(fsm.checksumValid == true);
+
+    const char *kValidS9 = "S9031000EC\n";
+    TEST_CHECK(fsm.parseLine(kValidS9) == true);
+    TEST_CHECK(fsm.state == SRecordLineState::Complete);
+    TEST_CHECK(fsm.recordType == '9');
+    TEST_CHECK(fsm.address == 0x1000);
+    TEST_CHECK(fsm.checksumValid == true);
+
+    // 2. Corrupted checksum record
+    const char *kCorruptedChecksum = "S1231000307C40003010E048314000023010E148E048314000040C68001A00026600001C00\n";
+    TEST_CHECK(fsm.parseLine(kCorruptedChecksum) == true);
+    TEST_CHECK(fsm.checksumValid == false);
+
+    // 3. Malformed hex characters
+    const char *kMalformedHex = "S1231000GG7C40003010E048314000023010E148E048314000040C68001A00026600001CED\n";
+    TEST_CHECK(fsm.parseLine(kMalformedHex) == false);
+    TEST_CHECK(fsm.state == SRecordLineState::Invalid);
+
+    // 4. Truncated record
+    const char *kTruncated = "S10510\n";
+    TEST_CHECK(fsm.parseLine(kTruncated) == false);
+    TEST_CHECK(fsm.state == SRecordLineState::Invalid);
+
+    return 0;
+}
+
+static int testUpdaterFsmLifecycleTransitions()
+{
+    std::cout << "[GUI TEST] Running testUpdaterFsmLifecycleTransitions...\n";
+
+    TEST_CHECK(Updater::isValidUpdaterTransition(UpdaterState::Idle, UpdaterState::CheckingRelease));
+    TEST_CHECK(Updater::isValidUpdaterTransition(UpdaterState::CheckingRelease, UpdaterState::UpdateAvailable));
+    TEST_CHECK(Updater::isValidUpdaterTransition(UpdaterState::UpdateAvailable, UpdaterState::FetchingChecksums));
+    TEST_CHECK(Updater::isValidUpdaterTransition(UpdaterState::FetchingChecksums, UpdaterState::DownloadingBinary));
+    TEST_CHECK(Updater::isValidUpdaterTransition(UpdaterState::DownloadingBinary, UpdaterState::VerifyingIntegrity));
+    TEST_CHECK(Updater::isValidUpdaterTransition(UpdaterState::VerifyingIntegrity, UpdaterState::ApplyingUpdate));
+    TEST_CHECK(Updater::isValidUpdaterTransition(UpdaterState::ApplyingUpdate, UpdaterState::Idle));
+
+    TEST_CHECK(Updater::isValidUpdaterTransition(UpdaterState::CheckingRelease, UpdaterState::Idle));
+    TEST_CHECK(Updater::isValidUpdaterTransition(UpdaterState::CheckingRelease, UpdaterState::Failed));
+    TEST_CHECK(Updater::isValidUpdaterTransition(UpdaterState::Failed, UpdaterState::Idle));
+
+    TEST_CHECK(!Updater::isValidUpdaterTransition(UpdaterState::CheckingRelease, UpdaterState::ApplyingUpdate));
+    TEST_CHECK(!Updater::isValidUpdaterTransition(UpdaterState::DownloadingBinary, UpdaterState::CheckingRelease));
+    TEST_CHECK(!Updater::isValidUpdaterTransition(UpdaterState::Idle, UpdaterState::ApplyingUpdate));
+    TEST_CHECK(!Updater::isValidUpdaterTransition(UpdaterState::Idle, UpdaterState::VerifyingIntegrity));
+    TEST_CHECK(!Updater::isValidUpdaterTransition(UpdaterState::CheckingRelease, UpdaterState::VerifyingIntegrity));
+
+    Updater updater;
+    TEST_CHECK(updater.state() == UpdaterState::Idle);
+
+    TEST_CHECK(updater.transitionTo(UpdaterState::CheckingRelease));
+    TEST_CHECK(updater.state() == UpdaterState::CheckingRelease);
+
+    TEST_CHECK(!updater.transitionTo(UpdaterState::ApplyingUpdate));
+    TEST_CHECK(updater.state() == UpdaterState::CheckingRelease);
+
+    TEST_CHECK(updater.transitionTo(UpdaterState::UpdateAvailable));
+    TEST_CHECK(updater.state() == UpdaterState::UpdateAvailable);
+
+    TEST_CHECK(updater.transitionTo(UpdaterState::DownloadingBinary));
+    TEST_CHECK(updater.transitionTo(UpdaterState::VerifyingIntegrity));
+    TEST_CHECK(updater.transitionTo(UpdaterState::ApplyingUpdate));
+    TEST_CHECK(updater.transitionTo(UpdaterState::Idle));
+    TEST_CHECK(updater.state() == UpdaterState::Idle);
+
+    return 0;
+}
 
 int main(int argc, char *argv[])
 {
@@ -643,6 +933,15 @@ int main(int argc, char *argv[])
     TEST_CHECK(Updater::autoCheckOnStartup() == !origSetting);
     Updater::setAutoCheckOnStartup(origSetting);
     TEST_CHECK(Updater::autoCheckOnStartup() == origSetting);
+
+    // -------------------------------------------------------------------------
+    // 6. Explicit FSM & O(1) Table Verification Tests
+    // -------------------------------------------------------------------------
+    TEST_CHECK(testSimExecFsmTransitionsAndInvariants() == 0);
+    TEST_CHECK(testOpcodeDecodeLutExhaustive64kEquivalence() == 0);
+    TEST_CHECK(testMemoryCursorFsmNavigationAndColumnMapping() == 0);
+    TEST_CHECK(testSRecordParserFsmValidAndCorruptedRecords() == 0);
+    TEST_CHECK(testUpdaterFsmLifecycleTransitions() == 0);
 
     std::cout << "[GUI TEST] ALL TESTS (CORE, HARDWARE, GRAPHICS, EASYBIN, HELP, UPDATER, LISTING, MEMORY, STACK) PASSED!\n";
     return 0;

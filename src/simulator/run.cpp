@@ -25,6 +25,46 @@ routines are :
 #include "simio.h"
 #include "simmessage.h"
 
+namespace {
+uint8_t s_opcodePrimaryLUT[65536];
+bool s_opcodeLutInitialized = false;
+
+void initOpcodeDecodeLUTInternal()
+{
+    if (s_opcodeLutInitialized) return;
+    for (uint32_t op = 0; op < 65536; ++op) {
+        int start = offsets[(op >> 12) & 0x0F];
+        int finish = offsets[((op >> 12) & 0x0F) + 1] - 1;
+        uint8_t match = 0xFF;
+        for (int i = start; i <= finish; ++i) {
+            if ((op & ~static_cast<uint32_t>(inst_arr[i].mask)) == static_cast<uint32_t>(inst_arr[i].val)) {
+                match = static_cast<uint8_t>(i);
+                break;
+            }
+        }
+        s_opcodePrimaryLUT[op] = match;
+    }
+    s_opcodeLutInitialized = true;
+}
+
+struct OpcodeLutAutoInitializer {
+    OpcodeLutAutoInitializer() {
+        initOpcodeDecodeLUTInternal();
+    }
+};
+
+OpcodeLutAutoInitializer s_opcodeLutAutoInit;
+} // namespace
+
+int decodeOpcodePrimaryIndex(uint16_t opcode)
+{
+    if (!s_opcodeLutInitialized) {
+        initOpcodeDecodeLUTInternal();
+    }
+    uint8_t idx = s_opcodePrimaryLUT[opcode];
+    return (idx == 0xFF) ? -1 : static_cast<int>(idx);
+}
+
 extern char buffer[256];  //used to form messages for display in window
 bool trace_bit = false;
 
@@ -719,7 +759,7 @@ int runprog()
 
 int exec_inst()
 {
-  static int start, finish, exec_result, i, intMask;
+  static int finish, exec_result, i, intMask;
   static long temp;
 
   // Reset read and write flags so when breakpoints are tested for read/write
@@ -735,12 +775,20 @@ int exec_inst()
     exec_result = mem_request (&PC, (long) WORD_MASK, (long *)&inst);
     if ( !(exec_result) )
     {
-      start = offsets[(inst & FIRST_FOUR) >> 12];
-      finish = offsets[((inst & FIRST_FOUR) >> 12) + 1] - 1;
+      if (!s_opcodeLutInitialized) {
+        initOpcodeDecodeLUTInternal();
+      }
 
-      for (i = start; i <= finish || exec_result == BAD_INST; i++)  // for all offsets
+      uint16_t op = static_cast<uint16_t>(inst);
+      finish = offsets[((op >> 12) & 0x0F) + 1] - 1;
+      uint8_t firstIdx = s_opcodePrimaryLUT[op];
+
+      i = (firstIdx != 0xFF) ? static_cast<int>(firstIdx) : (finish + 1);
+      bool dispatched = false;
+
+      while (i <= finish)
       {
-        if( (exec_result == BAD_INST) || ((inst & ~inst_arr[i].mask) == inst_arr[i].val) )
+        if ((op & ~static_cast<uint32_t>(inst_arr[i].mask)) == static_cast<uint32_t>(inst_arr[i].val))
         {
           if (trace) {
             mem_req (PC, (long) WORD_MASK, &temp);
@@ -820,12 +868,26 @@ int exec_inst()
           else
             trace_bit = false;
 
-          if(exec_result != BAD_INST)
-            exec_result = (*(names[i]))();        // run the 68000 instruction
+          exec_result = (*(names[i]))();        // run the 68000 instruction
 
-          // if previous instruction caused address or bus error but this one did not
-          if (errflg && (exec_result != ADDR_ERROR && exec_result != BUS_ERROR))
-            errflg = false;                     // don't halt the simulator
+          if (exec_result == BAD_INST) {
+            i++;
+            continue;
+          }
+
+          dispatched = true;
+          break;
+        }
+        i++;
+      }
+
+      if (!dispatched) {
+        exec_result = BAD_INST;
+      }
+
+      // if previous instruction caused address or bus error but this one did not
+      if (errflg && (exec_result != ADDR_ERROR && exec_result != BUS_ERROR))
+        errflg = false;                     // don't halt the simulator
 
           //-------------------------------------------------------------------
           //------------------------ EXCEPTION PROCESSING ---------------------
@@ -999,11 +1061,6 @@ int exec_inst()
               simMessage(msg);
             }
           }
-          break;        // break out of for loop
-        }
-        if(i == finish)
-          exec_result = BAD_INST;
-      } // end for
 
     } // end if
   } catch( ... ) {

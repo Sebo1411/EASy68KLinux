@@ -1,4 +1,5 @@
 #include "fileio.h"
+#include "../simulator/srecparser.h"
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -10,31 +11,6 @@
 
 static const int MAXBUF = 515;
 static const int SRECDATA = 32;
-
-// Parse exactly `digits` hexadecimal characters.  Checks the remaining string
-// length first so a truncated line cannot be read past its NUL terminator.
-static bool parseHexDigits(const char* text, int digits, unsigned int& value)
-{
-    if (!text || digits <= 0 || strlen(text) < static_cast<size_t>(digits))
-        return false;
-
-    unsigned int v = 0;
-    for (int i = 0; i < digits; ++i) {
-        const char c = text[i];
-        int d;
-        if (c >= '0' && c <= '9')
-            d = c - '0';
-        else if (c >= 'a' && c <= 'f')
-            d = c - 'a' + 10;
-        else if (c >= 'A' && c <= 'F')
-            d = c - 'A' + 10;
-        else
-            return false;
-        v = (v << 4) | static_cast<unsigned int>(d);
-    }
-    value = v;
-    return true;
-}
 
 void finishSRecord(char *sRec, int bytes)
 {
@@ -48,9 +24,10 @@ void finishSRecord(char *sRec, int bytes)
 
     char* ptr = sRec + 2;
     for (int i = 0; i < bytes; ++i) {
-        char byteHex[3] = { ptr[0], ptr[1], '\0' };
+        uint8_t byteVal = 0;
+        parseHexByte(ptr[0], ptr[1], byteVal);
         ptr += 2;
-        checksum += static_cast<unsigned char>(std::strtoul(byteHex, nullptr, 16));
+        checksum += byteVal;
     }
     snprintf(ptr, 4, "%02X\n", static_cast<unsigned char>(~checksum & 0xFF));
 }
@@ -75,100 +52,45 @@ bool loadSrec(const std::string& name, unsigned char* mem, size_t memSize, SrecI
     info.length = 0;
     info.headerS0.clear();
 
+    SRecordLineFSM fsm;
+
     while (fgets(lbuf, MAXBUF, fp) != nullptr) {
         line++;
-        char* bufptr = lbuf;
-        char s_type = 0;
-        int bytecount = 0;
-
-        if (sscanf(lbuf, "S%c%2x", &s_type, &bytecount) != 2 || bytecount < 1 ||
-            strlen(lbuf) < 4) {
+        if (!fsm.parseLine(lbuf)) {
             errorMsg = "Invalid S-Record header on line " + std::to_string(line);
             sRecError = true;
             break;
         }
-        bufptr += 4;
 
-        unsigned int loc = 0;
-        int addrDigits = 0;
-        bool hasData = false;
-        bool isHeader = false;
-
-        switch (s_type) {
-            case '0': addrDigits = 4; isHeader = true; break;
-            case '1': addrDigits = 4; hasData = true; break;
-            case '2': addrDigits = 6; hasData = true; break;
-            case '3': addrDigits = 8; hasData = true; break;
-            case '5': break;                       // S5 count record (ignore)
-            case '7': addrDigits = 8; break;
-            case '8': addrDigits = 6; break;
-            case '9': addrDigits = 4; break;
-            default:
-                errorMsg = "Unknown S-Record type on line " + std::to_string(line);
-                sRecError = true;
-                break;
-        }
-        if (sRecError) break;
-
-        if (s_type == '5')
+        if (fsm.state != SRecordLineState::Complete) {
             continue;
-
-        if (!parseHexDigits(bufptr, addrDigits, loc)) {
-            errorMsg = "Invalid address field on line " + std::to_string(line);
-            sRecError = true;
-            break;
-        }
-        bufptr += addrDigits;
-
-        if (s_type == '7' || s_type == '8' || s_type == '9') {
-            info.entryAddr = loc;
-            break;
         }
 
-        const int addrBytes = addrDigits / 2;
-        const int dataBytes = bytecount - addrBytes - 1;
-        if (dataBytes < 0) {
-            errorMsg = "Invalid byte count on line " + std::to_string(line);
-            sRecError = true;
+        if (fsm.recordType == '5') {
+            continue;
+        }
+
+        if (fsm.recordType == '7' || fsm.recordType == '8' || fsm.recordType == '9') {
+            info.entryAddr = fsm.address;
             break;
         }
 
-        if (isHeader) {
-            // S0 description record: decode printable header bytes only.
-            for (int i = 0; i < dataBytes; ++i) {
-                unsigned int s_byte = 0;
-                if (!parseHexDigits(bufptr, 2, s_byte)) {
-                    errorMsg = "Invalid S0 data on line " + std::to_string(line);
-                    sRecError = true;
-                    break;
-                }
-                bufptr += 2;
-                info.headerS0 += (s_byte >= 32 && s_byte <= 126)
-                                     ? static_cast<char>(s_byte)
-                                     : '.';
+        if (fsm.recordType == '0') {
+            for (uint8_t b : fsm.payload) {
+                info.headerS0 += (b >= 32 && b <= 126) ? static_cast<char>(b) : '.';
             }
-            if (sRecError) break;
-        } else if (hasData) {
-            for (int i = 0; i < dataBytes; ++i) {
-                unsigned int s_byte = 0;
-                if (!parseHexDigits(bufptr, 2, s_byte)) {
-                    errorMsg = "Invalid data field on line " + std::to_string(line);
-                    sRecError = true;
-                    break;
-                }
-                bufptr += 2;
-
+        } else if (fsm.recordType == '1' || fsm.recordType == '2' || fsm.recordType == '3') {
+            uint32_t loc = fsm.address;
+            for (uint8_t b : fsm.payload) {
                 if (loc >= memSize) {
                     errorMsg = "Address exceeds available memory size on line " + std::to_string(line);
                     sRecError = true;
                     break;
                 }
-
                 if (loc < lowAddr) lowAddr = loc;
                 if (loc > highAddr) highAddr = loc;
-
                 if (mem) {
-                    mem[loc] = static_cast<unsigned char>(s_byte);
+                    mem[loc] = b;
                 }
                 loc++;
             }
@@ -178,12 +100,8 @@ bool loadSrec(const std::string& name, unsigned char* mem, size_t memSize, SrecI
 
     fclose(fp);
 
-    if (sRecError) {
-        if (errorMsg.empty()) {
-            errorMsg = "Invalid S-Record format on line " + std::to_string(line);
-        }
+    if (sRecError)
         return false;
-    }
 
     if (lowAddr <= highAddr) {
         info.startAddr = lowAddr;

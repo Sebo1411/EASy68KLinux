@@ -14,7 +14,7 @@ extern int stepToAddr;
 
 namespace {
 // The simulator core keeps its 16 MB address space in the global `memory`
-// pointer, so several SimulatorManager instances share one buffer.  Track the
+// pointer, so several SimulatorManager instances share one buffer. Track the
 // instances and only release the buffer when the last one goes away.
 int simulatorManagerInstances = 0;
 }
@@ -52,10 +52,156 @@ SimulatorManager::~SimulatorManager()
     }
 }
 
+void SimulatorManager::applyExecEvent(SimExecEvent event)
+{
+    SimExecState nextState = nextSimExecState(m_execState, event);
+    m_execState = nextState;
+
+    programLoaded = (m_execState != SimExecState::Unloaded);
+
+    switch (m_execState) {
+    case SimExecState::Unloaded:
+        running = false;
+        runMode = false;
+        trace = false;
+        sstep = false;
+        halt = true;
+        stopInstruction = false;
+        inputMode = false;
+        if (runTimer) runTimer->stop();
+        if (autoTraceTimer) autoTraceTimer->stop();
+        break;
+
+    case SimExecState::IdleHalted:
+        running = false;
+        runMode = false;
+        trace = false;
+        sstep = false;
+        halt = true;
+        stopInstruction = false;
+        inputMode = false;
+        if (runTimer) runTimer->stop();
+        if (autoTraceTimer) autoTraceTimer->stop();
+        break;
+
+    case SimExecState::Paused:
+        running = false;
+        runMode = false;
+        trace = false;
+        sstep = false;
+        halt = false;
+        stopInstruction = false;
+        inputMode = false;
+        stepToAddr = 0;
+        runToAddr = 0;
+        if (runTimer) runTimer->stop();
+        if (autoTraceTimer) autoTraceTimer->stop();
+        emit simulationPaused();
+        break;
+
+    case SimExecState::SteppingInto:
+        running = false;
+        runMode = false;
+        trace = true;
+        sstep = false;
+        halt = false;
+        stopInstruction = false;
+        inputMode = false;
+        if (runTimer) runTimer->stop();
+        if (autoTraceTimer) autoTraceTimer->stop();
+        break;
+
+    case SimExecState::SteppingOver:
+        running = (stepToAddr != 0);
+        runMode = true;
+        trace = (stepToAddr == 0);
+        sstep = true;
+        halt = false;
+        stopInstruction = false;
+        inputMode = false;
+        if (running) {
+            if (runTimer && !runTimer->isActive()) runTimer->start();
+        } else {
+            if (runTimer && runTimer->isActive()) runTimer->stop();
+        }
+        if (autoTraceTimer) autoTraceTimer->stop();
+        break;
+
+    case SimExecState::RunningContinuous:
+        running = true;
+        runMode = true;
+        trace = false;
+        sstep = false;
+        halt = false;
+        stopInstruction = false;
+        inputMode = false;
+        if (runTimer && !runTimer->isActive()) runTimer->start();
+        if (autoTraceTimer) autoTraceTimer->stop();
+        emit simulationStarted();
+        break;
+
+    case SimExecState::RunningToCursor:
+        running = true;
+        runMode = true;
+        trace = false;
+        sstep = false;
+        halt = false;
+        stopInstruction = false;
+        inputMode = false;
+        if (runTimer && !runTimer->isActive()) runTimer->start();
+        if (autoTraceTimer) autoTraceTimer->stop();
+        emit simulationStarted();
+        break;
+
+    case SimExecState::AutoTracing:
+        running = false;
+        runMode = false;
+        trace = true;
+        sstep = false;
+        halt = false;
+        stopInstruction = false;
+        inputMode = false;
+        if (runTimer) runTimer->stop();
+        if (autoTraceTimer && !autoTraceTimer->isActive()) autoTraceTimer->start();
+        emit autoTraceStateChanged(true);
+        break;
+
+    case SimExecState::WaitingStopIRQ:
+        running = false;
+        runMode = false;
+        trace = false;
+        sstep = false;
+        halt = true;
+        stopInstruction = true;
+        inputMode = false;
+        if (runTimer) runTimer->stop();
+        if (autoTraceTimer) autoTraceTimer->stop();
+        break;
+
+    case SimExecState::WaitingTerminalInput:
+        running = false;
+        runMode = false;
+        trace = false;
+        sstep = false;
+        halt = false;
+        stopInstruction = false;
+        inputMode = true;
+        if (runTimer) runTimer->stop();
+        if (autoTraceTimer) autoTraceTimer->stop();
+        break;
+
+    default:
+        break;
+    }
+
+    emit stateChanged();
+    emit registersChanged();
+    emit memoryChanged(static_cast<uint32_t>(PC));
+}
+
 bool SimulatorManager::loadS68(const QString &filePath)
 {
     pause();
-    if (autoTraceTimer) autoTraceTimer->stop();
     currentS68File = filePath;
 
     if (memory) {
@@ -67,19 +213,18 @@ bool SimulatorManager::loadS68(const QString &filePath)
 
     std::string pathStr = filePath.toStdString();
     if (loadSrec(const_cast<char*>(pathStr.c_str())) != SUCCESS) {
-        programLoaded = false;
+        applyExecEvent(SimExecEvent::LoadFail);
         emit messageLogged(tr("Failed to load S-Record file: %1").arg(filePath));
         return false;
     }
 
-    programLoaded = true;
+    applyExecEvent(SimExecEvent::LoadSuccess);
     startPC = static_cast<uint32_t>(PC);
 
     emit messageLogged(tr("Loaded S-Record: %1 (Initial PC = 0x%2)")
                        .arg(QFileInfo(filePath).fileName())
                        .arg(startPC, 8, 16, QLatin1Char('0')));
     emit programLoadedChanged(startPC);
-    emit stateChanged();
     return true;
 }
 
@@ -108,88 +253,76 @@ void SimulatorManager::loadListingDirectives(const QStringList &lines)
 
 void SimulatorManager::traceInto()
 {
-    if (!programLoaded) return;
+    if (m_execState == SimExecState::Unloaded) return;
     pause();
 
-    trace = true;
-    sstep = false;
-    runMode = false;
+    applyExecEvent(SimExecEvent::CmdTraceInto);
     runprog();
 
-    emit stateChanged();
-
     if (halt) {
-        if (autoTraceTimer && autoTraceTimer->isActive()) autoTraceTimer->stop();
+        applyExecEvent(SimExecEvent::SimHaltHit);
         emit simulationHalted(tr("Program halted."));
+    } else if (inputMode) {
+        applyExecEvent(SimExecEvent::InputRequested);
+    } else if (stopInstruction) {
+        applyExecEvent(SimExecEvent::StopInstrHit);
+    } else {
+        applyExecEvent(SimExecEvent::StepCompleted);
     }
 }
 
 void SimulatorManager::stepOver()
 {
-    if (!programLoaded) return;
+    if (m_execState == SimExecState::Unloaded) return;
     pause();
 
-    trace = true;
-    sstep = true;
     stepToAddr = 0;
-    runMode = true;
+    applyExecEvent(SimExecEvent::CmdStepOver);
 
     runprog();
 
     if (sstep && stepToAddr != 0 && !trace && runMode && !halt) {
-        running = true;
-        runTimer->start();
+        applyExecEvent(SimExecEvent::SubrEntered);
     } else {
-        sstep = false;
-        stepToAddr = 0;
-        running = false;
-    }
-
-    emit stateChanged();
-
-    if (halt) {
-        if (autoTraceTimer && autoTraceTimer->isActive()) autoTraceTimer->stop();
-        emit simulationHalted(tr("Program halted."));
+        if (halt) {
+            applyExecEvent(SimExecEvent::SimHaltHit);
+            emit simulationHalted(tr("Program halted."));
+        } else if (inputMode) {
+            applyExecEvent(SimExecEvent::InputRequested);
+        } else {
+            applyExecEvent(SimExecEvent::StepCompleted);
+        }
     }
 }
 
 void SimulatorManager::run()
 {
-    if (!programLoaded || running) return;
+    if (m_execState == SimExecState::Unloaded || running) return;
 
     if (autoTraceTimer && autoTraceTimer->isActive()) {
         autoTraceTimer->stop();
     }
 
-    running = true;
-    runMode = true;
-    trace = false;
-    sstep = false;
-    runTimer->start();
-    emit stateChanged();
+    applyExecEvent(SimExecEvent::CmdRun);
 }
 
 void SimulatorManager::runToCursor(uint32_t targetAddr)
 {
-    if (!programLoaded) return;
+    if (m_execState == SimExecState::Unloaded) return;
     runToAddr = static_cast<int>(targetAddr);
-    run();
+    applyExecEvent(SimExecEvent::CmdRunToCursor);
 }
 
 void SimulatorManager::pause()
 {
-    if (!running && (!autoTraceTimer || !autoTraceTimer->isActive())) return;
+    if (!running && (!autoTraceTimer || !autoTraceTimer->isActive()) &&
+        m_execState != SimExecState::RunningContinuous &&
+        m_execState != SimExecState::RunningToCursor &&
+        m_execState != SimExecState::AutoTracing) {
+        return;
+    }
 
-    running = false;
-    runMode = false;
-    sstep = false;
-    stepToAddr = 0;
-    runToAddr = 0;
-
-    if (runTimer) runTimer->stop();
-    if (autoTraceTimer) autoTraceTimer->stop();
-
-    emit stateChanged();
+    applyExecEvent(SimExecEvent::CmdPause);
     emit messageLogged(tr("Simulation paused at PC=0x%1").arg(static_cast<uint32_t>(PC), 8, 16, QLatin1Char('0')));
 }
 
@@ -198,13 +331,14 @@ void SimulatorManager::rewindProgram()
     pause();
     initSim();
     PC = startPC;
-    emit stateChanged();
+    applyExecEvent(SimExecEvent::CmdRewind);
     emit messageLogged(tr("Program rewound to start PC=0x%1").arg(startPC, 8, 16, QLatin1Char('0')));
 }
 
 void SimulatorManager::reloadProgram()
 {
     pause();
+    applyExecEvent(SimExecEvent::CmdReload);
     if (!currentS68File.isEmpty()) {
         loadS68(currentS68File);
     } else {
@@ -218,25 +352,24 @@ void SimulatorManager::reloadProgram()
 
 void SimulatorManager::toggleAutoTrace(int intervalMs)
 {
-    if (autoTraceTimer->isActive()) {
-        autoTraceTimer->stop();
+    if (m_execState == SimExecState::AutoTracing || (autoTraceTimer && autoTraceTimer->isActive())) {
+        applyExecEvent(SimExecEvent::CmdAutoTraceToggle);
         emit messageLogged(tr("Auto-trace stopped."));
     } else {
-        if (!programLoaded) return;
+        if (m_execState == SimExecState::Unloaded) return;
         pause();
         if (intervalMs > 0) {
             autoTraceInterval = intervalMs;
         }
         autoTraceTimer->setInterval(autoTraceInterval);
-        autoTraceTimer->start();
+        applyExecEvent(SimExecEvent::CmdAutoTraceToggle);
         emit messageLogged(tr("Auto-trace started (%1 ms interval).").arg(autoTraceInterval));
     }
-    emit stateChanged();
 }
 
 bool SimulatorManager::isAutoTracing() const
 {
-    return autoTraceTimer && autoTraceTimer->isActive();
+    return m_execState == SimExecState::AutoTracing;
 }
 
 void SimulatorManager::setAutoTraceInterval(int ms)
@@ -251,9 +384,8 @@ void SimulatorManager::setAutoTraceInterval(int ms)
 
 void SimulatorManager::autoTraceTick()
 {
-    if (!programLoaded || inputMode || halt) {
-        autoTraceTimer->stop();
-        emit stateChanged();
+    if (m_execState == SimExecState::Unloaded || inputMode || halt) {
+        applyExecEvent(SimExecEvent::CmdPause);
         if (halt) {
             emit simulationHalted(tr("Program halted during auto-trace."));
         }
@@ -266,6 +398,33 @@ void SimulatorManager::clearCycles()
 {
     cycles = 0;
     emit stateChanged();
+    emit registersChanged();
+}
+
+void SimulatorManager::provideInput(const QString &input)
+{
+    (void)input;
+    if (m_execState == SimExecState::WaitingTerminalInput) {
+        applyExecEvent(SimExecEvent::InputCompleted);
+    }
+}
+
+void SimulatorManager::triggerIRQ(int level)
+{
+    if (level >= 1 && level <= 7) {
+        irq |= (1 << (level - 1));
+        applyExecEvent(SimExecEvent::IrqAsserted);
+    }
+}
+
+void SimulatorManager::executeBatch()
+{
+    executionBatch();
+}
+
+void SimulatorManager::autoTraceStep()
+{
+    autoTraceTick();
 }
 
 void SimulatorManager::executionBatch()
@@ -274,21 +433,65 @@ void SimulatorManager::executionBatch()
 
     for (int i = 0; i < BATCH_SIZE; ++i) {
         if (halt || !runMode) {
-            running = false;
-            runTimer->stop();
-            sstep = false;
-            stepToAddr = 0;
-            runToAddr = 0;
-            emit stateChanged();
+            applyExecEvent(SimExecEvent::SimHaltHit);
             if (halt) {
                 emit simulationHalted(tr("Execution halted at PC=0x%1").arg(static_cast<uint32_t>(PC), 8, 16, QLatin1Char('0')));
             }
             return;
         }
+        if (inputMode) {
+            applyExecEvent(SimExecEvent::InputRequested);
+            return;
+        }
+        if (stopInstruction) {
+            applyExecEvent(SimExecEvent::StopInstrHit);
+            return;
+        }
+        if (hasBreakpoint(static_cast<uint32_t>(PC))) {
+            applyExecEvent(SimExecEvent::BreakpointHit);
+            return;
+        }
+        if (runToAddr != 0 && static_cast<uint32_t>(PC) == static_cast<uint32_t>(runToAddr)) {
+            applyExecEvent(SimExecEvent::TargetReached);
+            return;
+        }
+        if (stepToAddr != 0 && static_cast<uint32_t>(PC) == static_cast<uint32_t>(stepToAddr)) {
+            applyExecEvent(SimExecEvent::TargetReached);
+            return;
+        }
+
         runprog();
+
+        if (halt) {
+            applyExecEvent(SimExecEvent::SimHaltHit);
+            emit simulationHalted(tr("Execution halted at PC=0x%1").arg(static_cast<uint32_t>(PC), 8, 16, QLatin1Char('0')));
+            return;
+        }
+        if (inputMode) {
+            applyExecEvent(SimExecEvent::InputRequested);
+            return;
+        }
+        if (stopInstruction) {
+            applyExecEvent(SimExecEvent::StopInstrHit);
+            return;
+        }
+        if (hasBreakpoint(static_cast<uint32_t>(PC))) {
+            applyExecEvent(SimExecEvent::BreakpointHit);
+            return;
+        }
+        if (runToAddr != 0 && static_cast<uint32_t>(PC) == static_cast<uint32_t>(runToAddr)) {
+            applyExecEvent(SimExecEvent::TargetReached);
+            return;
+        }
+        if (stepToAddr != 0 && static_cast<uint32_t>(PC) == static_cast<uint32_t>(stepToAddr)) {
+            applyExecEvent(SimExecEvent::TargetReached);
+            return;
+        }
     }
 
     emit stateChanged();
+    emit registersChanged();
+    emit memoryChanged(static_cast<uint32_t>(PC));
 }
 
 void SimulatorManager::toggleBreakpoint(uint32_t addr)
@@ -373,6 +576,7 @@ void SimulatorManager::setD(int idx, uint32_t val)
     if (idx >= 0 && idx < 8) {
         D[idx] = static_cast<long>(val);
         emit stateChanged();
+        emit registersChanged();
     }
 }
 
@@ -381,11 +585,13 @@ void SimulatorManager::setA(int idx, uint32_t val)
     if (idx >= 0 && idx < 7) {
         A[idx] = static_cast<long>(val);
         emit stateChanged();
+        emit registersChanged();
     } else if (idx == 7) {
         // Sync active stack pointer
         int active = a_reg(7);
         A[active] = static_cast<long>(val);
         emit stateChanged();
+        emit registersChanged();
     }
 }
 
@@ -393,22 +599,26 @@ void SimulatorManager::setUS(uint32_t val)
 {
     A[7] = static_cast<long>(val);
     emit stateChanged();
+    emit registersChanged();
 }
 
 void SimulatorManager::setSS(uint32_t val)
 {
     A[8] = static_cast<long>(val);
     emit stateChanged();
+    emit registersChanged();
 }
 
 void SimulatorManager::setPC(uint32_t val)
 {
     PC = static_cast<long>(val);
     emit stateChanged();
+    emit registersChanged();
 }
 
 void SimulatorManager::setSR(uint16_t val)
 {
     SR = static_cast<short>(val);
     emit stateChanged();
+    emit registersChanged();
 }

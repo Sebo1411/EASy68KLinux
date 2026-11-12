@@ -44,6 +44,17 @@ Updater::~Updater()
 {
 }
 
+bool Updater::transitionTo(UpdaterState newState)
+{
+    if (m_state == newState) return true;
+    if (!isValidUpdaterTransition(m_state, newState)) {
+        return false;
+    }
+    m_state = newState;
+    emit stateChanged(m_state);
+    return true;
+}
+
 QString Updater::currentVersion()
 {
     return QStringLiteral(EASY68K_VERSION_STRING);
@@ -217,6 +228,13 @@ void Updater::setAutoCheckOnStartup(bool enabled)
 
 void Updater::checkForUpdates(bool silentIfUpToDate)
 {
+    if (m_state != UpdaterState::Idle && m_state != UpdaterState::Failed && m_state != UpdaterState::UpdateAvailable) {
+        return;
+    }
+    if (!transitionTo(UpdaterState::CheckingRelease)) {
+        return;
+    }
+
     QUrl url(QStringLiteral("https://api.github.com/repos/Sebo1411/EASy68KLinux/releases/latest"));
     QNetworkRequest request(url);
     request.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("EASy68K-Linux-Updater"));
@@ -227,6 +245,7 @@ void Updater::checkForUpdates(bool silentIfUpToDate)
     connect(reply, &QNetworkReply::finished, this, [this, reply, silentIfUpToDate]() {
         reply->deleteLater();
         if (reply->error() != QNetworkReply::NoError) {
+            transitionTo(UpdaterState::Failed);
             QString err = reply->errorString();
             emit updateCheckCompleted(false, ReleaseInfo(), err);
             if (!silentIfUpToDate && QGuiApplication::platformName() != QStringLiteral("offscreen")) {
@@ -239,6 +258,7 @@ void Updater::checkForUpdates(bool silentIfUpToDate)
         QByteArray data = reply->readAll();
         ReleaseInfo info = parseReleaseJson(data);
         if (!info.isValid()) {
+            transitionTo(UpdaterState::Failed);
             QString err = tr("Invalid release data received from server.");
             emit updateCheckCompleted(false, ReleaseInfo(), err);
             if (!silentIfUpToDate && QGuiApplication::platformName() != QStringLiteral("offscreen")) {
@@ -248,6 +268,11 @@ void Updater::checkForUpdates(bool silentIfUpToDate)
         }
 
         bool updateAvailable = isNewerVersion(currentVersion(), info.version);
+        if (updateAvailable) {
+            transitionTo(UpdaterState::UpdateAvailable);
+        } else {
+            transitionTo(UpdaterState::Idle);
+        }
         emit updateCheckCompleted(updateAvailable, info, QString());
 
         if (QGuiApplication::platformName() != QStringLiteral("offscreen")) {
@@ -404,18 +429,25 @@ void Updater::showRepoSetupDialog()
 
 void Updater::downloadAndApplyUpdate(const ReleaseInfo &info)
 {
+    if (m_state != UpdaterState::UpdateAvailable && m_state != UpdaterState::Idle && m_state != UpdaterState::Failed) {
+        return;
+    }
+
     ReleaseAsset asset = selectBestAssetForSystem(info);
     if (asset.downloadUrl.isEmpty()) {
+        transitionTo(UpdaterState::Failed);
         QMessageBox::warning(m_parentWidget, tr("Download Unavailable"),
                              tr("No binary download asset found for your platform in this release.\n"
                                 "Opening the release webpage..."));
         QDesktopServices::openUrl(QUrl(info.htmlUrl));
+        transitionTo(UpdaterState::Idle);
         return;
     }
 
     // 1. Fetch SHA256SUMS.txt if available
     QString sha256Content;
     if (!info.sha256SumsUrl.isEmpty()) {
+        transitionTo(UpdaterState::FetchingChecksums);
         QNetworkRequest shaReq{QUrl(info.sha256SumsUrl)};
         shaReq.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("EASy68K-Linux-Updater"));
         shaReq.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::NoLessSafeRedirectPolicy);
@@ -438,6 +470,7 @@ void Updater::downloadAndApplyUpdate(const ReleaseInfo &info)
     QTemporaryFile tempFile(tempTemplate);
     tempFile.setAutoRemove(false);
     if (!tempFile.open()) {
+        transitionTo(UpdaterState::Failed);
         QMessageBox::critical(m_parentWidget, tr("Download Error"),
                               tr("Failed to allocate a temporary file for download."));
         return;
@@ -447,12 +480,14 @@ void Updater::downloadAndApplyUpdate(const ReleaseInfo &info)
 
     QFile outFile(downloadedFilePath);
     if (!outFile.open(QIODevice::WriteOnly)) {
+        transitionTo(UpdaterState::Failed);
         QMessageBox::critical(m_parentWidget, tr("Download Error"),
                               tr("Failed to write to temporary file: %1").arg(downloadedFilePath));
         return;
     }
 
     // 3. Download asset
+    transitionTo(UpdaterState::DownloadingBinary);
     QNetworkRequest assetReq{QUrl(asset.downloadUrl)};
     assetReq.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("EASy68K-Linux-Updater"));
     assetReq.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::NoLessSafeRedirectPolicy);
@@ -494,20 +529,24 @@ void Updater::downloadAndApplyUpdate(const ReleaseInfo &info)
 
     if (wasCanceled) {
         QFile::remove(downloadedFilePath);
+        transitionTo(UpdaterState::Idle);
         return;
     }
 
     if (replyError != QNetworkReply::NoError) {
         QFile::remove(downloadedFilePath);
+        transitionTo(UpdaterState::Failed);
         QMessageBox::critical(m_parentWidget, tr("Download Failed"),
                               tr("Failed to download update package:\n%1").arg(errorStr));
         return;
     }
 
     // 4. Verify SHA-256
+    transitionTo(UpdaterState::VerifyingIntegrity);
     if (!expectedHash.isEmpty()) {
         if (!verifyFileSha256(downloadedFilePath, expectedHash)) {
             QFile::remove(downloadedFilePath);
+            transitionTo(UpdaterState::Failed);
             QMessageBox::critical(m_parentWidget, tr("Verification Failed"),
                                   tr("Downloaded file failed SHA-256 checksum verification!\n\n"
                                      "Expected: %1\n\n"
@@ -517,6 +556,7 @@ void Updater::downloadAndApplyUpdate(const ReleaseInfo &info)
     }
 
     // 5. Apply or save
+    transitionTo(UpdaterState::ApplyingUpdate);
     if (qEnvironmentVariableIsSet("APPIMAGE")) {
         QString appImagePath = QString::fromLocal8Bit(qgetenv("APPIMAGE"));
         QFile::Permissions perms = QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner |
@@ -552,6 +592,7 @@ void Updater::downloadAndApplyUpdate(const ReleaseInfo &info)
                                     "Ensure you have write permissions to the file location.").arg(appImagePath));
             QFile::remove(downloadedFilePath);
         }
+        transitionTo(success ? UpdaterState::Idle : UpdaterState::Failed);
         return;
     }
 
@@ -601,4 +642,5 @@ void Updater::downloadAndApplyUpdate(const ReleaseInfo &info)
     } else if (box.clickedButton() == folderBtn) {
         QDesktopServices::openUrl(QUrl::fromLocalFile(downloadDir));
     }
+    transitionTo(UpdaterState::Idle);
 }

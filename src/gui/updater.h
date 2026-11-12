@@ -30,13 +30,79 @@ struct ReleaseInfo {
     bool isValid() const { return !version.isEmpty(); }
 };
 
+enum class UpdaterState : uint8_t {
+    Idle = 0,
+    CheckingRelease,
+    UpdateAvailable,
+    FetchingChecksums,
+    DownloadingBinary,
+    VerifyingIntegrity,
+    ApplyingUpdate,
+    Failed,
+    Count
+};
+
 class Updater : public QObject
 {
     Q_OBJECT
 
 public:
+    static constexpr bool isValidUpdaterTransition(UpdaterState from, UpdaterState to) noexcept
+    {
+        if (from == to) return true;
+
+        switch (from) {
+        case UpdaterState::Idle:
+            return (to == UpdaterState::CheckingRelease ||
+                    to == UpdaterState::DownloadingBinary ||
+                    to == UpdaterState::Failed);
+
+        case UpdaterState::CheckingRelease:
+            return (to == UpdaterState::UpdateAvailable ||
+                    to == UpdaterState::Idle ||
+                    to == UpdaterState::Failed);
+
+        case UpdaterState::UpdateAvailable:
+            return (to == UpdaterState::FetchingChecksums ||
+                    to == UpdaterState::DownloadingBinary ||
+                    to == UpdaterState::CheckingRelease ||
+                    to == UpdaterState::Idle ||
+                    to == UpdaterState::Failed);
+
+        case UpdaterState::FetchingChecksums:
+            return (to == UpdaterState::DownloadingBinary ||
+                    to == UpdaterState::Idle ||
+                    to == UpdaterState::Failed);
+
+        case UpdaterState::DownloadingBinary:
+            return (to == UpdaterState::VerifyingIntegrity ||
+                    to == UpdaterState::Idle ||
+                    to == UpdaterState::Failed);
+
+        case UpdaterState::VerifyingIntegrity:
+            return (to == UpdaterState::ApplyingUpdate ||
+                    to == UpdaterState::Idle ||
+                    to == UpdaterState::Failed);
+
+        case UpdaterState::ApplyingUpdate:
+            return (to == UpdaterState::Idle ||
+                    to == UpdaterState::Failed);
+
+        case UpdaterState::Failed:
+            return (to == UpdaterState::Idle ||
+                    to == UpdaterState::CheckingRelease ||
+                    to == UpdaterState::DownloadingBinary);
+
+        default:
+            return false;
+        }
+    }
+
     explicit Updater(QWidget *parentWidget = nullptr);
     ~Updater() override;
+
+    UpdaterState state() const noexcept { return m_state; }
+    bool transitionTo(UpdaterState newState);
 
     static QString currentVersion();
     static QString repositorySlug();
@@ -59,8 +125,10 @@ public slots:
 
 signals:
     void updateCheckCompleted(bool updateAvailable, const ReleaseInfo &info, const QString &errorString);
+    void stateChanged(UpdaterState newState);
 
 private:
+    UpdaterState m_state = UpdaterState::Idle;
     QWidget *m_parentWidget = nullptr;
     QNetworkAccessManager *netManager = nullptr;
 };

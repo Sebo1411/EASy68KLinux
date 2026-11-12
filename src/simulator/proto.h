@@ -11,6 +11,11 @@ This file contains function prototype definitions for all functions
 
 
 
+#include <cstdint>
+#include "srecparser.h"
+
+int decodeOpcodePrimaryIndex(uint16_t opcode);
+
 int MOVE(void );
 int MOVEP(void );
 int MOVEA(void );

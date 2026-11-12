@@ -207,16 +207,12 @@ void deleteFile(char *fname, short *result)
 int loadSrec(char *name)        // load memory with contents of s_record file
 {
   FILE *fp;
-  int bytecount = 0, line, loc = 0, end__of__file;
-  unsigned int s_byte;
-  char s_type = 0;
-  char *bufptr, *bufend;
-  uchar checksum;
+  int line = 0;
+  bool end__of__file = false;
   std::string str;
   const std::string EASy68K_HEADER = "S0 = 68KPROG   20CREATED BY EASY68K";
   bool EASy68Kv2_0_SRecord = false;
   bool sRecError = false;
-  bool skipRecord;              // used to skip loading record data
 
   try {
     fp = fopen(name, "rt");
@@ -225,185 +221,110 @@ int loadSrec(char *name)        // load memory with contents of s_record file
       return FAILURE;
     }
 
-    line = 0;
-    end__of__file = false;
-    s_type = 0;
+    SRecordLineFSM fsm;
 
     while (fgets(lbuf, SREC_MAX, fp) != NULL) { // read file until end
-      bufptr = lbuf;
-      checksum = 0;
-      skipRecord = false;
       line++;
-      size_t lineLen = strlen(lbuf);
-      // Reject short/garbled records before advancing past them.  Without
-      // this check bytecount/s_type stayed uninitialized and bufptr could
-      // point outside lbuf.
-      if (lineLen < 4 || sscanf (lbuf, "S%c%2x", &s_type, &bytecount) != 2 ||
-          bytecount < 1) {
+      if (!fsm.parseLine(lbuf)) {
         sRecError = true;
         break;
       }
-      bufptr += 4;
-      checksum += bytecount;
-      switch (s_type) {         // what type of S record ?
-        // S0  Description of S-Record
-        case '0' :
-          skipRecord = true;    // don't load S0 data
-          for (bufend = bufptr; *bufend != '\0'; bufend++);  // put bufend at end of line
-          if (lineLen < 8 || sscanf(bufptr,"%04x", &loc) != 1) // 2 byte address
-            sRecError = true;
-          else
-            bufptr += 4;
+
+      if (fsm.state != SRecordLineState::Complete) {
+        continue;
+      }
+
+      if (!fsm.checksumValid) {
+        simMessage("Checksum error on line %d...", line);
+      }
+
+      switch (fsm.recordType) {
+        case '0': {
           str = "S0 = ";
-          while (sscanf(bufptr,"%2x",&s_byte) == 1) {
-            bufptr += 2;
-            checksum += (s_byte & 0xFF);
-            if ((bufptr + 2) >= bufend) break;  // if checksum byte
-              if ((s_byte & 0xFF) >= ' ' && (s_byte & 0xFF) <= '~') // if displayable
-                str = str + (char)(s_byte & 0xFF);          // add character to str
-              else
-                str = str + '.';                // use '.' for non displayable
+          for (uint8_t b : fsm.payload) {
+            if (b >= ' ' && b <= '~') {
+              str += static_cast<char>(b);
+            } else {
+              str += '.';
+            }
           }
-          checksum = ~checksum &0xFF;
-          if(checksum)                          // if checksum not 0
-            simMessage("Checksum error on line %d...", line);
           simMessage("%s", str.c_str());
-          if(EASy68Kv2_0_SRecord)       // if this is an EASy68K 2.0 SRecord file
-          {
-            // Set Memory Map
-            if(str.length() >= 29) {
+
+          if (EASy68Kv2_0_SRecord) {
+            if (str.length() >= 29) {
               std::string tag = str.substr(5, 9);
-              if(tag == "      ROM") {        // if ROM range included
+              if (tag == "      ROM") {
                 ROMMap = true;
                 ROMStart = std::strtoul(str.substr(15, 6).c_str(), nullptr, 16);
                 ROMEnd = std::strtoul(str.substr(22, 6).c_str(), nullptr, 16);
-              } else if(tag == "     READ") { // if Read/Only range included
+              } else if (tag == "     READ") {
                 ReadMap = true;
                 ReadStart = std::strtoul(str.substr(15, 6).c_str(), nullptr, 16);
                 ReadEnd = std::strtoul(str.substr(22, 6).c_str(), nullptr, 16);
-              } else if(tag == "PROTECTED") { // if Protected range included
+              } else if (tag == "PROTECTED") {
                 ProtectedMap = true;
                 ProtectedStart = std::strtoul(str.substr(15, 6).c_str(), nullptr, 16);
                 ProtectedEnd = std::strtoul(str.substr(22, 6).c_str(), nullptr, 16);
-              } else if(tag == "  INVALID") { // if Invalid range included
+              } else if (tag == "  INVALID") {
                 InvalidMap = true;
                 InvalidStart = std::strtoul(str.substr(15, 6).c_str(), nullptr, 16);
                 InvalidEnd = std::strtoul(str.substr(22, 6).c_str(), nullptr, 16);
               }
             }
-          }else if(str == EASy68K_HEADER)
+          } else if (str == EASy68K_HEADER) {
             EASy68Kv2_0_SRecord = true;
+          }
           str = "";
           break;
-        // S1 2-byte address
-        case '1' :
-          if (lineLen < 8 || sscanf(bufptr,"%04x", &loc) != 1)
-            sRecError = true;
-          else
-            bufptr += 4;
-          break;
-        // S2 3-byte address
-        case '2' :
-          if (lineLen < 10 || sscanf(bufptr,"%06x", &loc) != 1)
-            sRecError = true;
-          else
-            bufptr += 6;
-          break;
-        // S3 4-byte address
-        case '3' :
-          if (lineLen < 12 || sscanf(bufptr,"%08x", &loc) != 1)
-            sRecError = true;
-          else
-            bufptr += 8;
-          break;
-        // S5 length count
-        case '5' :
-          skipRecord = true;      // ignore
-          break;
-        // S7 4-byte starting address
-        case '7' :
-          if (lineLen < 12 || sscanf(bufptr,"%08x", &loc) != 1)
-            sRecError = true;
-          else {
-            PC = loc;
-            end__of__file = true;
-          }
-          break;
-        // S8 3-byte starting address
-        case '8' :
-          if (lineLen < 10 || sscanf(bufptr,"%06x", &loc) != 1)
-            sRecError = true;
-          else {
-            PC = loc;
-            end__of__file = true;
-          }
-          break;
-        // S9 2-byte starting address
-        case '9' :
-          if (lineLen < 8 || sscanf(bufptr,"%04x", &loc) != 1)
-            sRecError = true;
-          else {
-            PC = loc;
-            end__of__file = true;
-          }
-          break;
-        default :  sRecError = true;
-      }
-      if (end__of__file) break;
-      if (sRecError) break;
-      if (!skipRecord)
-      {
-        checksum += loc&0xFF;
-        checksum += (loc&0xFF00)>>8;
-        checksum += (loc&0xFF0000)>>16;
-        checksum += (loc&0xFF000000)>>24;
+        }
 
-        // The byte count covers address + data + checksum.  Use it rather
-        // than scanning to end-of-line, which used to treat the checksum
-        // as one extra data byte (especially with CRLF files).
-        int addrBytes = (s_type == '1') ? 2 : (s_type == '2') ? 3 : 4;
-        int dataBytes = bytecount - addrBytes - 1;
-        if (dataBytes < 0) {
-          sRecError = true;
-        }
-        for (int i = 0; i < dataBytes; i++) {
-          if (sscanf(bufptr,"%2x",&s_byte) != 1) {
-            sRecError = true;
-            break;
+        case '1':
+        case '2':
+        case '3': {
+          uint32_t loc = fsm.address;
+          for (size_t i = 0; i < fsm.payload.size(); ++i) {
+            if (loc >= MEMSIZE) {
+              simMessage("Invalid Address on line %d...", line);
+              sRecError = true;
+              break;
+            }
+            memory[loc++ & ADDRMASK] = static_cast<char>(fsm.payload[i]);
           }
-          bufptr += 2;
-          checksum += (s_byte & 0xFF);
-          if ((loc < 0) || (loc >= (int)MEMSIZE)) {
-            simMessage("Invalid Address on line %d...", line);
-            sRecError = true;
-            break;
-          }
-          memory[loc++ & ADDRMASK] = (char)(s_byte & 0xFF);
+          break;
         }
-        // Include the checksum byte itself: a valid record sums to 0xFF.
-        if (sscanf(bufptr,"%2x",&s_byte) != 1)
+
+        case '5':
+          // Ignore length count record
+          break;
+
+        case '7':
+        case '8':
+        case '9': {
+          PC = static_cast<long>(fsm.address);
+          end__of__file = true;
+          break;
+        }
+
+        default:
           sRecError = true;
-        else
-          checksum += (s_byte & 0xFF);
-        checksum = ~checksum &0xFF;
-        if(checksum)                    // if checksum not 0
-          simMessage("Checksum error on line %d...", line);
-        if (sRecError) break;
+          break;
       }
-    } // endw read until end of file
-    if (sRecError)                     // if error reading file, print message
-    {
+
+      if (end__of__file || sRecError) break;
+    }
+
+    if (sRecError) {
       simMessage("Invalid data on line %d of .S68 file...", line);
-      simMessage("%d: %s", line, lbuf);    // *ck 12-3-2005
+      simMessage("%d: %s", line, lbuf);
       simMessage("Remainder of load stopped...");
-      fclose(fp);			// close file specified
+      fclose(fp);
       return FAILURE;
-    }else{
+    } else {
       simMessage(".S68 file read successful");
     }
-    fclose(fp);			// close file specified
+    fclose(fp);
     return SUCCESS;
-    }
+  }
   catch( ... ) {
     simMessage("Unexpected Error reading .S68 file");
     return FAILURE;

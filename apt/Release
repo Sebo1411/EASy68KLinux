@@ -1,0 +1,23 @@
+Architectures: amd64
+Codename: stable
+Components: main
+Date: Thu, 12 Nov 2026 23:42:46 +0000
+Label: EASy68K Linux Native Official Repository
+Origin: EASy68KLinux
+Suite: stable
+MD5Sum:
+ 034f64391a56710ad1d43fd76b71d4eb              563 Packages
+ bd59d58614f2417e78015411934125f9              414 Packages.gz
+ 8ab1e1cab966b02b1f51371d2934e36a              176 Release
+SHA1:
+ b8e57b2d0986b2ac294c5609e24be961a8c6131d              563 Packages
+ cbebb8c7d3fc00a7ff477167c37ab8d2926c574a              414 Packages.gz
+ 3ce9b6c176e9df8ba87ac262b3b0931b9a2f558d              176 Release
+SHA256:
+ ca5cd4855c52b449ba9db5f887296d05ee046acec7699954a6226101a41ae146              563 Packages
+ d64eaf8efde394407c2cf61f5b597d9f5039a0794305e087cadc6fb19d0b8c93              414 Packages.gz
+ cd01efbda60e6f328cad52f60491da14e0f7f2d27d6deb300e45422157f85ca2              176 Release
+SHA512:
+ ec290b038f97c95fdd83ae57f246fc90a1ac48045d0b66f9a63b0490ae57d2408db0798b6c3934a2022c30e012d330459a5b9651b80b21f4bd948b139800d3c2              563 Packages
+ fba011997e7c9879f7d5bea6232a4c5e915d20e62997e2af2801f3b8b11bd9d5d7c5084854a460417f9bb6e2460df360095c85c1a39e088487279f6a22fad5bb              414 Packages.gz
+ ad0e21db7cf7062eee18a23875b54bc2f07f96c90f1789794b7e701c02c01c93900c77d55f8ae178567420d6783c626cc0114e1e3cbfbc2913c3ce27e7e3a672              176 Release

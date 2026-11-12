@@ -1,0 +1,15 @@
+Package: easy68k-linux
+Version: 5.17.0
+Architecture: amd64
+Maintainer: EASy68K Linux Maintainers <https://github.com/Sebo1411/EASy68KLinux>
+Installed-Size: 3025
+Depends: libqt6widgets6, libqt6gui6, libqt6core6, libqt6network6, libqt6multimedia6
+Filename: ./easy68k-linux-5.17.0-Linux.deb
+Size: 1297344
+MD5sum: ecbd5d430efb95c58aba8f8f09fcc83f
+SHA1: 3dddb2a4ed6412312439c57bc59b97b1d85ea253
+SHA256: 4bcc7799f6af850597cbbda0c4e01c32615d68d44265ca5d77915d39ea9c6c80
+Section: devel
+Priority: optional
+Description: Motorola 68000 Assembler, Simulator & IDE for Linux
+

@@ -66,7 +66,9 @@ public:
 
     void setMemoryPointer(char *mem, uint32_t memSize);
     void setBaseAddress(uint32_t addr);
+    void setProgramStartAddress(uint32_t startAddr);
     uint32_t getBaseAddress() const;
+    QString getAddressInputText() const { return addrInput ? addrInput->text() : QString(); }
     void updateView();
 
     // Memory operations matching Sim68K Memory1.cpp

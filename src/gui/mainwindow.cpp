@@ -35,37 +35,279 @@
 #include <QStyle>
 #include <QIcon>
 #include <QPixmap>
+#include <QPainter>
+#include <QPainterPath>
 #include <QTextBlock>
 
-static QIcon loadSimIcon(const QString &relPath, QStyle::StandardPixmap fallback, QWidget *parentWidget)
+QIcon MainWindow::createAppWindowIcon()
 {
-    QString appDir = QCoreApplication::applicationDirPath();
-    QStringList candidates = {
-        QDir::currentPath() + "/" + relPath,
-        appDir + "/" + relPath,
-        appDir + "/../" + relPath,
-        appDir + "/../../" + relPath,
-        appDir + "/../share/doc/easy68k/" + relPath,
-        "/usr/share/doc/easy68k/" + relPath,
-        "/usr/local/share/doc/easy68k/" + relPath
-    };
-    for (const QString &path : candidates) {
-        if (QFileInfo::exists(path)) {
-            QPixmap pm(path);
-            if (!pm.isNull()) {
-                return QIcon(pm);
-            }
+    QIcon icon;
+    const int sizes[] = {16, 24, 32, 48, 64, 128};
+    for (int sz : sizes) {
+        QPixmap pm(sz, sz);
+        pm.fill(Qt::transparent);
+        QPainter p(&pm);
+        p.setRenderHint(QPainter::Antialiasing, true);
+
+        qreal s = sz / 64.0;
+        p.scale(s, s);
+
+        // Gold/Silver IC pins on top & bottom
+        p.setBrush(QColor(0x94, 0xA3, 0xB8));
+        p.setPen(Qt::NoPen);
+        for (int i = 0; i < 5; ++i) {
+            qreal px = 12.0 + i * 9.0;
+            p.drawRoundedRect(QRectF(px, 3.0, 4.0, 9.0), 1.5, 1.5);
+            p.drawRoundedRect(QRectF(px, 52.0, 4.0, 9.0), 1.5, 1.5);
         }
+        // Left & right pins
+        for (int i = 0; i < 4; ++i) {
+            qreal py = 15.0 + i * 9.5;
+            p.drawRoundedRect(QRectF(3.0, py, 9.0, 4.0), 1.5, 1.5);
+            p.drawRoundedRect(QRectF(52.0, py, 9.0, 4.0), 1.5, 1.5);
+        }
+
+        // Main Motorola 68000 ceramic/slate IC package
+        QRectF body(9.0, 9.0, 46.0, 46.0);
+        p.setBrush(QColor(0x1E, 0x29, 0x3B));
+        p.setPen(QPen(QColor(0x38, 0xBD, 0xF8), 2.5));
+        p.drawRoundedRect(body, 7.0, 7.0);
+
+        // Pin 1 index dot (gold)
+        p.setBrush(QColor(0xFA, 0xCC, 0x15));
+        p.setPen(Qt::NoPen);
+        p.drawEllipse(QPointF(16.0, 16.0), 2.5, 2.5);
+
+        // "68K" typography
+        QFont f("Monospace", 12, QFont::Black);
+        f.setPixelSize(17);
+        p.setFont(f);
+        p.setPen(QColor(0xF8, 0xFA, 0xFC));
+        p.drawText(body.adjusted(0, 2, 0, 0), Qt::AlignCenter, QStringLiteral("68K"));
+
+        icon.addPixmap(pm);
     }
-    if (parentWidget && parentWidget->style()) {
-        return parentWidget->style()->standardIcon(fallback);
+    return icon;
+}
+
+QIcon MainWindow::createModernToolbarIcon(const QString &name)
+{
+    QIcon icon;
+    const int sizes[] = {24, 48};
+    for (int sz : sizes) {
+        QPixmap pm(sz, sz);
+        pm.fill(Qt::transparent);
+        QPainter p(&pm);
+        p.setRenderHint(QPainter::Antialiasing, true);
+        qreal s = sz / 24.0;
+        p.scale(s, s);
+
+        if (name == QLatin1String("new")) {
+            // Document outline (#D4D4D4) + green '+' badge
+            QPainterPath doc;
+            doc.moveTo(5, 3);
+            doc.lineTo(14, 3);
+            doc.lineTo(19, 8);
+            doc.lineTo(19, 21);
+            doc.lineTo(5, 21);
+            doc.closeSubpath();
+            p.setBrush(QColor(0x25, 0x25, 0x26));
+            p.setPen(QPen(QColor(0xD4, 0xD4, 0xD4), 1.8));
+            p.drawPath(doc);
+            p.setPen(QPen(QColor(0x89, 0xD1, 0x85), 2.2, Qt::SolidLine, Qt::RoundCap));
+            p.drawLine(12, 11, 12, 17);
+            p.drawLine(9, 14, 15, 14);
+        } else if (name == QLatin1String("open")) {
+            // Warm VS Code folder (#DCB67A)
+            QPainterPath folder;
+            folder.moveTo(3, 6);
+            folder.lineTo(9, 6);
+            folder.lineTo(11, 8);
+            folder.lineTo(21, 8);
+            folder.lineTo(21, 19);
+            folder.lineTo(3, 19);
+            folder.closeSubpath();
+            p.setBrush(QColor(0xDC, 0xB6, 0x7A));
+            p.setPen(QPen(QColor(0xE8, 0xC9, 0x95), 1.4));
+            p.drawPath(folder);
+        } else if (name == QLatin1String("save")) {
+            // VS Code blue disk (#569CD6)
+            p.setBrush(QColor(0x37, 0x94, 0xFF));
+            p.setPen(QPen(QColor(0x75, 0xBE, 0xFF), 1.4));
+            p.drawRoundedRect(QRectF(4, 4, 16, 16), 2.5, 2.5);
+            p.setBrush(QColor(0x1E, 0x1E, 0x1E));
+            p.drawRect(QRectF(7, 4, 9, 6));
+            p.setBrush(QColor(0xE2, 0xE8, 0xF0));
+            p.drawRect(QRectF(7, 13, 10, 7));
+        } else if (name == QLatin1String("find")) {
+            // Sky-blue magnifying glass (#9CDCFE)
+            p.setBrush(Qt::NoBrush);
+            p.setPen(QPen(QColor(0x9C, 0xDC, 0xFE), 2.2));
+            p.drawEllipse(QPointF(10.5, 10.5), 5.5, 5.5);
+            p.setPen(QPen(QColor(0x9C, 0xDC, 0xFE), 2.5, Qt::SolidLine, Qt::RoundCap));
+            p.drawLine(QPointF(14.8, 14.8), QPointF(20.0, 20.0));
+        } else if (name == QLatin1String("undo")) {
+            p.setPen(QPen(QColor(0x75, 0xBE, 0xFF), 2.2, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+            p.setBrush(Qt::NoBrush);
+            p.drawArc(QRectF(6, 7, 13, 11), 0 * 16, 180 * 16);
+            p.drawLine(QPointF(6, 12), QPointF(4, 8));
+            p.drawLine(QPointF(6, 12), QPointF(10, 10));
+        } else if (name == QLatin1String("redo")) {
+            p.setPen(QPen(QColor(0x75, 0xBE, 0xFF), 2.2, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+            p.setBrush(Qt::NoBrush);
+            p.drawArc(QRectF(5, 7, 13, 11), 0 * 16, 180 * 16);
+            p.drawLine(QPointF(18, 12), QPointF(20, 8));
+            p.drawLine(QPointF(18, 12), QPointF(14, 10));
+        } else if (name == QLatin1String("cut") || name == QLatin1String("copy") || name == QLatin1String("paste")) {
+            p.setPen(QPen(QColor(0xD4, 0xD4, 0xD4), 1.8));
+            p.setBrush(QColor(0x25, 0x25, 0x26));
+            p.drawRoundedRect(QRectF(5, 6, 11, 14), 1.5, 1.5);
+            p.drawRoundedRect(QRectF(8, 3, 11, 14), 1.5, 1.5);
+        } else if (name == QLatin1String("comment")) {
+            p.setBrush(QColor(0x25, 0x25, 0x26));
+            p.setPen(QPen(QColor(0x6A, 0x99, 0x55), 1.6));
+            p.drawRoundedRect(QRectF(2.5, 4.5, 19.0, 15.0), 3.5, 3.5);
+            QFont f("Monospace", 9, QFont::Bold);
+            f.setPixelSize(12);
+            p.setFont(f);
+            p.setPen(QColor(0x89, 0xD1, 0x85));
+            p.drawText(QRectF(2.5, 4.5, 19.0, 15.0), Qt::AlignCenter, QStringLiteral("+*"));
+        } else if (name == QLatin1String("uncomment")) {
+            p.setBrush(QColor(0x25, 0x25, 0x26));
+            p.setPen(QPen(QColor(0xCE, 0x91, 0x78), 1.6));
+            p.drawRoundedRect(QRectF(2.5, 4.5, 19.0, 15.0), 3.5, 3.5);
+            QFont f("Monospace", 9, QFont::Bold);
+            f.setPixelSize(12);
+            p.setFont(f);
+            p.setPen(QColor(0xCE, 0x91, 0x78));
+            p.drawText(QRectF(2.5, 4.5, 19.0, 15.0), Qt::AlignCenter, QStringLiteral("-*"));
+        } else if (name == QLatin1String("assemble")) {
+            // Teal build hexagon/gear + play (#4EC9B0)
+            p.setBrush(QColor(0x1E, 0x3A, 0x3A));
+            p.setPen(QPen(QColor(0x4E, 0xC9, 0xB0), 2.0));
+            p.drawRoundedRect(QRectF(3.5, 3.5, 17.0, 17.0), 4.0, 4.0);
+            QPainterPath tri;
+            tri.moveTo(9.0, 7.5);
+            tri.lineTo(17.0, 12.0);
+            tri.lineTo(9.0, 16.5);
+            tri.closeSubpath();
+            p.setBrush(QColor(0x4E, 0xC9, 0xB0));
+            p.setPen(Qt::NoPen);
+            p.drawPath(tri);
+        } else if (name == QLatin1String("run")) {
+            // Vibrant VS Code Debug Run green play triangle (#89D185)
+            QPainterPath tri;
+            tri.moveTo(6.0, 4.0);
+            tri.lineTo(19.5, 12.0);
+            tri.lineTo(6.0, 20.0);
+            tri.closeSubpath();
+            p.setBrush(QColor(0x89, 0xD1, 0x85));
+            p.setPen(QPen(QColor(0x4E, 0xC9, 0xB0), 1.2, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+            p.drawPath(tri);
+        } else if (name == QLatin1String("runto")) {
+            // Green play triangle pointing to gold vertical cursor bar
+            QPainterPath tri;
+            tri.moveTo(4.5, 5.0);
+            tri.lineTo(15.5, 12.0);
+            tri.lineTo(4.5, 19.0);
+            tri.closeSubpath();
+            p.setBrush(QColor(0x89, 0xD1, 0x85));
+            p.setPen(Qt::NoPen);
+            p.drawPath(tri);
+            p.setPen(QPen(QColor(0xFF, 0xCC, 0x00), 2.8, Qt::SolidLine, Qt::RoundCap));
+            p.drawLine(QPointF(18.5, 5.0), QPointF(18.5, 19.0));
+        } else if (name == QLatin1String("autotrace")) {
+            // Double fast-forward triangles (#C586C0)
+            QPainterPath t1, t2;
+            t1.moveTo(3.5, 5.5);
+            t1.lineTo(12.0, 12.0);
+            t1.lineTo(3.5, 18.5);
+            t1.closeSubpath();
+            t2.moveTo(11.5, 5.5);
+            t2.lineTo(20.5, 12.0);
+            t2.lineTo(11.5, 18.5);
+            t2.closeSubpath();
+            p.setBrush(QColor(0xC5, 0x86, 0xC0));
+            p.setPen(Qt::NoPen);
+            p.drawPath(t1);
+            p.drawPath(t2);
+        } else if (name == QLatin1String("stepover")) {
+            // VS Code Step Over: curved blue arc jumping over dot
+            p.setBrush(QColor(0xD4, 0xD4, 0xD4));
+            p.setPen(Qt::NoPen);
+            p.drawEllipse(QPointF(12.0, 17.5), 2.5, 2.5);
+            p.setBrush(Qt::NoBrush);
+            p.setPen(QPen(QColor(0x75, 0xBE, 0xFF), 2.3, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+            p.drawArc(QRectF(5.0, 5.5, 14.0, 12.0), 20 * 16, 140 * 16);
+            p.drawLine(QPointF(18.5, 10.5), QPointF(14.5, 9.5));
+            p.drawLine(QPointF(18.5, 10.5), QPointF(19.5, 6.5));
+        } else if (name == QLatin1String("traceinto")) {
+            // VS Code Step Into: downward blue arrow pointing into dot
+            p.setBrush(QColor(0xD4, 0xD4, 0xD4));
+            p.setPen(Qt::NoPen);
+            p.drawEllipse(QPointF(12.0, 18.5), 2.5, 2.5);
+            p.setPen(QPen(QColor(0x75, 0xBE, 0xFF), 2.4, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+            p.drawLine(QPointF(12.0, 4.0), QPointF(12.0, 13.5));
+            p.drawLine(QPointF(8.0, 9.5), QPointF(12.0, 13.8));
+            p.drawLine(QPointF(16.0, 9.5), QPointF(12.0, 13.8));
+        } else if (name == QLatin1String("pause")) {
+            // VS Code Pause: two golden vertical bars (#FFCC00)
+            p.setBrush(QColor(0xFF, 0xCC, 0x00));
+            p.setPen(Qt::NoPen);
+            p.drawRoundedRect(QRectF(6.5, 4.5, 4.0, 15.0), 1.2, 1.2);
+            p.drawRoundedRect(QRectF(13.5, 4.5, 4.0, 15.0), 1.2, 1.2);
+        } else if (name == QLatin1String("reset")) {
+            // VS Code Reset/Stop: circular coral red reset arrow (#F14C4C)
+            p.setBrush(Qt::NoBrush);
+            p.setPen(QPen(QColor(0xF1, 0x4C, 0x4C), 2.4, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+            p.drawArc(QRectF(5.0, 5.0, 14.0, 14.0), 45 * 16, 275 * 16);
+            p.drawLine(QPointF(16.5, 6.5), QPointF(12.5, 6.5));
+            p.drawLine(QPointF(16.5, 6.5), QPointF(16.5, 10.5));
+        } else if (name == QLatin1String("reload")) {
+            // Teal circular reload arrow (#4EC9B0)
+            p.setBrush(Qt::NoBrush);
+            p.setPen(QPen(QColor(0x4E, 0xC9, 0xB0), 2.4, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+            p.drawArc(QRectF(5.0, 5.0, 14.0, 14.0), 30 * 16, 290 * 16);
+            p.drawLine(QPointF(17.5, 7.5), QPointF(13.5, 7.5));
+            p.drawLine(QPointF(17.5, 7.5), QPointF(17.5, 3.5));
+        }
+        icon.addPixmap(pm);
     }
-    return QIcon();
+    return icon;
 }
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
 {
+    setWindowIcon(createAppWindowIcon());
+    setStyleSheet(QStringLiteral(
+        "QMainWindow, QWidget { background-color: #1E1E1E; color: #D4D4D4; }"
+        "QMenuBar { background-color: #252526; color: #CCCCCC; border-bottom: 1px solid #333337; }"
+        "QMenuBar::item:selected { background-color: #094771; color: #FFFFFF; }"
+        "QMenu { background-color: #252526; color: #CCCCCC; border: 1px solid #454545; }"
+        "QMenu::item:selected { background-color: #094771; color: #FFFFFF; }"
+        "QToolBar { background-color: #252526; border-bottom: 1px solid #333337; spacing: 4px; padding: 3px; }"
+        "QToolButton { background-color: transparent; border: 1px solid transparent; border-radius: 4px; padding: 4px; }"
+        "QToolButton:hover { background-color: #2A2D2E; border: 1px solid #3C3C3C; }"
+        "QToolButton:pressed { background-color: #094771; }"
+        "QTabWidget::pane { border: 1px solid #333337; background-color: #1E1E1E; }"
+        "QTabBar::tab { background-color: #2D2D2D; color: #969696; padding: 6px 14px; border: 1px solid #252526; border-bottom: none; }"
+        "QTabBar::tab:selected { background-color: #1E1E1E; color: #FFFFFF; border-top: 2px solid #007ACC; font-weight: bold; }"
+        "QTabBar::tab:hover:!selected { background-color: #2A2D2E; color: #CCCCCC; }"
+        "QGroupBox { border: 1px solid #3C3C3C; border-radius: 4px; margin-top: 8px; padding-top: 6px; font-weight: bold; color: #9CDCFE; }"
+        "QGroupBox::title { subcontrol-origin: margin; left: 8px; padding: 0 4px; }"
+        "QLineEdit { background-color: #3C3C3C; color: #F0F0F0; border: 1px solid #555555; border-radius: 3px; padding: 2px 4px; selection-background-color: #264F78; }"
+        "QLineEdit:focus { border: 1px solid #007ACC; background-color: #252526; }"
+        "QPushButton { background-color: #333337; color: #E0E0E0; border: 1px solid #555555; border-radius: 3px; padding: 4px 10px; }"
+        "QPushButton:hover { background-color: #094771; border-color: #007ACC; color: #FFFFFF; }"
+        "QPushButton:pressed { background-color: #0E639C; }"
+        "QComboBox { background-color: #3C3C3C; color: #F0F0F0; border: 1px solid #555555; border-radius: 3px; padding: 2px 6px; }"
+        "QListWidget, QPlainTextEdit, QTextBrowser { background-color: #1E1E1E; color: #D4D4D4; border: 1px solid #333337; selection-background-color: #264F78; }"
+        "QSplitter::handle { background-color: #333337; }"
+        "QStatusBar { background-color: #007ACC; color: #FFFFFF; font-weight: bold; }"
+        "QStatusBar QLabel { background-color: transparent; color: #FFFFFF; padding: 0 6px; }"
+    ));
+
     updater = new Updater(this);
     simManager = new SimulatorManager(this);
 
@@ -75,6 +317,11 @@ MainWindow::MainWindow(QWidget *parent)
     createToolBars();
 
     connect(simManager, &SimulatorManager::stateChanged, this, &MainWindow::onSimulatorStateChanged);
+    connect(simManager, &SimulatorManager::programLoadedChanged, this, [this](uint32_t startAddr) {
+        if (memoryView) {
+            memoryView->setProgramStartAddress(startAddr);
+        }
+    });
     connect(simManager, &SimulatorManager::simulationHalted, this, &MainWindow::onSimulatorHalted);
     connect(simManager, &SimulatorManager::messageLogged, this, &MainWindow::onSimulatorMessage);
 
@@ -201,7 +448,7 @@ void MainWindow::setupUi()
     auto *logHeader = new QLabel(tr(" Execution Trace & Simulator Messages:"), logBox);
     QFont logHeaderFont("Monospace", 8, QFont::Bold);
     logHeader->setFont(logHeaderFont);
-    logHeader->setStyleSheet("background-color: #E2E8F0; color: #334155; padding: 2px 4px; border-bottom: 1px solid #CBD5E1;");
+    logHeader->setStyleSheet("background-color: #252526; color: #CCCCCC; padding: 3px 6px; border-bottom: 1px solid #3C3C3C;");
     logLayout->addWidget(logHeader);
 
     executionLogView = new QPlainTextEdit(logBox);
@@ -252,15 +499,15 @@ void MainWindow::setupUi()
 void MainWindow::createActions()
 {
     // File Actions
-    newAct = new QAction(loadSimIcon("docs/help/Images/ToolNew.GIF", QStyle::SP_FileIcon, this), tr("&New"), this);
+    newAct = new QAction(createModernToolbarIcon("new"), tr("&New"), this);
     newAct->setShortcuts(QKeySequence::New);
     connect(newAct, &QAction::triggered, this, &MainWindow::newFile);
 
-    openAct = new QAction(loadSimIcon("docs/help/Images/ToolOpen.GIF", QStyle::SP_DialogOpenButton, this), tr("&Open..."), this);
+    openAct = new QAction(createModernToolbarIcon("open"), tr("&Open..."), this);
     openAct->setShortcuts(QKeySequence::Open);
     connect(openAct, &QAction::triggered, this, &MainWindow::openFile);
 
-    saveAct = new QAction(loadSimIcon("docs/help/Images/ToolSave.GIF", QStyle::SP_DialogSaveButton, this), tr("&Save"), this);
+    saveAct = new QAction(createModernToolbarIcon("save"), tr("&Save"), this);
     saveAct->setShortcuts(QKeySequence::Save);
     connect(saveAct, &QAction::triggered, this, &MainWindow::saveFile);
 
@@ -273,78 +520,78 @@ void MainWindow::createActions()
     connect(exitAct, &QAction::triggered, this, &QWidget::close);
 
     // Edit Actions (Edit68K)
-    undoAct = new QAction(loadSimIcon("docs/help/Images/ToolUndo.GIF", QStyle::SP_ArrowBack, this), tr("&Undo"), this);
+    undoAct = new QAction(createModernToolbarIcon("undo"), tr("&Undo"), this);
     undoAct->setShortcuts(QKeySequence::Undo);
     connect(undoAct, &QAction::triggered, editor, &QPlainTextEdit::undo);
 
-    redoAct = new QAction(loadSimIcon("docs/help/Images/ToolRedo.GIF", QStyle::SP_ArrowForward, this), tr("&Redo"), this);
+    redoAct = new QAction(createModernToolbarIcon("redo"), tr("&Redo"), this);
     redoAct->setShortcuts(QKeySequence::Redo);
     connect(redoAct, &QAction::triggered, editor, &QPlainTextEdit::redo);
 
-    cutAct = new QAction(loadSimIcon("docs/help/Images/ToolCut.GIF", QStyle::SP_DialogDiscardButton, this), tr("Cu&t"), this);
+    cutAct = new QAction(createModernToolbarIcon("cut"), tr("Cu&t"), this);
     cutAct->setShortcuts(QKeySequence::Cut);
     connect(cutAct, &QAction::triggered, editor, &QPlainTextEdit::cut);
 
-    copyAct = new QAction(loadSimIcon("docs/help/Images/ToolCopy.GIF", QStyle::SP_FileDialogDetailedView, this), tr("&Copy"), this);
+    copyAct = new QAction(createModernToolbarIcon("copy"), tr("&Copy"), this);
     copyAct->setShortcuts(QKeySequence::Copy);
     connect(copyAct, &QAction::triggered, editor, &QPlainTextEdit::copy);
 
-    pasteAct = new QAction(loadSimIcon("docs/help/Images/ToolPaste.GIF", QStyle::SP_FileDialogInfoView, this), tr("&Paste"), this);
+    pasteAct = new QAction(createModernToolbarIcon("paste"), tr("&Paste"), this);
     pasteAct->setShortcuts(QKeySequence::Paste);
     connect(pasteAct, &QAction::triggered, editor, &QPlainTextEdit::paste);
 
-    commentAct = new QAction(loadSimIcon("docs/help/Images/ToolComment.GIF", QStyle::SP_FileDialogNewFolder, this), tr("Comment Lines (+*)"), this);
+    commentAct = new QAction(createModernToolbarIcon("comment"), tr("Comment Lines (+*)"), this);
     connect(commentAct, &QAction::triggered, this, &MainWindow::onCommentLines);
 
-    uncommentAct = new QAction(loadSimIcon("docs/help/Images/ToolUncomment.GIF", QStyle::SP_FileDialogBack, this), tr("Uncomment Lines (-*)"), this);
+    uncommentAct = new QAction(createModernToolbarIcon("uncomment"), tr("Uncomment Lines (-*)"), this);
     connect(uncommentAct, &QAction::triggered, this, &MainWindow::onUncommentLines);
 
     insertTemplateAct = new QAction(tr("Insert 68000 &Template"), this);
     connect(insertTemplateAct, &QAction::triggered, this, &MainWindow::onInsertTemplate);
 
     // Project Actions
-    assembleAct = new QAction(loadSimIcon("docs/help/Images/ToolAssemble.GIF", QStyle::SP_BrowserReload, this), tr("&Assemble"), this);
+    assembleAct = new QAction(createModernToolbarIcon("assemble"), tr("&Assemble"), this);
     assembleAct->setShortcut(QKeySequence(Qt::Key_F11));
     connect(assembleAct, &QAction::triggered, this, [this]() { assembleCurrentFile(false); });
 
-    assembleAndLoadAct = new QAction(tr("Assemble && &Load in Simulator"), this);
+    assembleAndLoadAct = new QAction(createModernToolbarIcon("assemble"), tr("Assemble && &Load in Simulator"), this);
     assembleAndLoadAct->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_F8));
     connect(assembleAndLoadAct, &QAction::triggered, this, [this]() { assembleCurrentFile(true); });
 
     // Sim68K Run Actions
-    runAct = new QAction(loadSimIcon("docs/help/SIMHELP/IMAGES/BasicOp/RunBtn.GIF", QStyle::SP_MediaPlay, this), tr("&Run"), this);
+    runAct = new QAction(createModernToolbarIcon("run"), tr("&Run"), this);
     runAct->setShortcut(QKeySequence(Qt::Key_F9));
     connect(runAct, &QAction::triggered, this, &MainWindow::onSimulatorRun);
 
-    runToCursorAct = new QAction(loadSimIcon("docs/help/SIMHELP/IMAGES/BasicOp/RunToBtn.GIF", QStyle::SP_MediaSeekForward, this), tr("Run &To Cursor"), this);
+    runToCursorAct = new QAction(createModernToolbarIcon("runto"), tr("Run &To Cursor"), this);
     runToCursorAct->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_F9));
     connect(runToCursorAct, &QAction::triggered, this, &MainWindow::onSimulatorRunToCursor);
 
-    autoTraceAct = new QAction(loadSimIcon("docs/help/SIMHELP/IMAGES/BasicOp/AutoTraceBtn.GIF", QStyle::SP_ArrowForward, this), tr("&Auto Trace"), this);
+    autoTraceAct = new QAction(createModernToolbarIcon("autotrace"), tr("&Auto Trace"), this);
     autoTraceAct->setShortcut(QKeySequence(Qt::Key_F10));
     connect(autoTraceAct, &QAction::triggered, this, &MainWindow::onSimulatorAutoTrace);
 
-    stepOverAct = new QAction(loadSimIcon("docs/help/SIMHELP/IMAGES/BasicOp/StepBtn.GIF", QStyle::SP_MediaSkipForward, this), tr("&Step Over"), this);
+    stepOverAct = new QAction(createModernToolbarIcon("stepover"), tr("&Step Over"), this);
     stepOverAct->setShortcut(QKeySequence(Qt::Key_F8));
     connect(stepOverAct, &QAction::triggered, this, &MainWindow::onSimulatorStepOver);
 
-    traceIntoAct = new QAction(loadSimIcon("docs/help/SIMHELP/IMAGES/BasicOp/TraceBtn.GIF", QStyle::SP_MediaSeekForward, this), tr("&Trace Into"), this);
+    traceIntoAct = new QAction(createModernToolbarIcon("traceinto"), tr("&Trace Into"), this);
     traceIntoAct->setShortcut(QKeySequence(Qt::Key_F7));
     connect(traceIntoAct, &QAction::triggered, this, &MainWindow::onSimulatorTraceInto);
 
-    pauseAct = new QAction(loadSimIcon("docs/help/SIMHELP/IMAGES/BasicOp/PauseBtn.GIF", QStyle::SP_MediaPause, this), tr("&Pause"), this);
+    pauseAct = new QAction(createModernToolbarIcon("pause"), tr("&Pause"), this);
     pauseAct->setShortcut(QKeySequence(Qt::Key_F6));
     connect(pauseAct, &QAction::triggered, this, &MainWindow::onSimulatorPause);
 
-    rewindAct = new QAction(tr("Re&wind Program"), this);
+    rewindAct = new QAction(createModernToolbarIcon("reset"), tr("Re&wind Program"), this);
     rewindAct->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_F2));
     connect(rewindAct, &QAction::triggered, this, &MainWindow::onSimulatorRewind);
 
-    reloadAct = new QAction(loadSimIcon("docs/help/SIMHELP/IMAGES/BasicOp/ReloadBtn.GIF", QStyle::SP_BrowserReload, this), tr("Re&load Program"), this);
+    reloadAct = new QAction(createModernToolbarIcon("reload"), tr("Re&load Program"), this);
     reloadAct->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_F3));
     connect(reloadAct, &QAction::triggered, this, &MainWindow::onSimulatorReload);
 
-    resetAct = new QAction(loadSimIcon("docs/help/SIMHELP/IMAGES/BasicOp/ResetBtn.GIF", QStyle::SP_MediaStop, this), tr("&Reset"), this);
+    resetAct = new QAction(createModernToolbarIcon("reset"), tr("&Reset"), this);
     resetAct->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_R));
     connect(resetAct, &QAction::triggered, this, &MainWindow::onSimulatorReset);
 
@@ -370,7 +617,7 @@ void MainWindow::createActions()
     });
 
     // Search Actions
-    findAct = new QAction(loadSimIcon("docs/help/Images/ToolFind.GIF", QStyle::SP_FileDialogContentsView, this), tr("&Find..."), this);
+    findAct = new QAction(createModernToolbarIcon("find"), tr("&Find..."), this);
     findAct->setShortcut(QKeySequence::Find);
     connect(findAct, &QAction::triggered, this, &MainWindow::onFindText);
 
@@ -524,6 +771,7 @@ void MainWindow::createMenus()
 void MainWindow::createToolBars()
 {
     auto *mainToolBar = addToolBar(tr("Main Toolbar"));
+    mainToolBar->setIconSize(QSize(22, 22));
     mainToolBar->addAction(newAct);
     mainToolBar->addAction(openAct);
     mainToolBar->addAction(saveAct);
@@ -722,12 +970,16 @@ void MainWindow::onAssemblerFinished(int exitCode, QProcess::ExitStatus /* exitS
         auto *okItem = new QListWidgetItem(tr("Assembly complete with 0 errors."), buildOutputList);
         okItem->setForeground(QColor(22, 163, 74));
 
-        loadListing(currentListingPath);
-
         if (pendingAutoLoad) {
             mainTabs->setCurrentIndex(1); // Switch to Simulator tab
             simManager->loadS68(currentS68Path);
-        } else {
+        }
+
+        // Apply *[sim68k] listing directives after loading the S-Record so
+        // they are not reset by initSim().
+        loadListing(currentListingPath);
+
+        if (!pendingAutoLoad) {
             showAssemblerStatusDialog(0, warningCount);
         }
     } else {
@@ -787,6 +1039,8 @@ void MainWindow::showAssemblerStatusDialog(int errors, int warnings)
         dlg.accept();
         mainTabs->setCurrentIndex(1); // Simulator tab
         simManager->loadS68(currentS68Path);
+        // loadS68() resets simulator defaults; re-apply *[sim68k] directives.
+        loadListing(currentListingPath);
     });
 
     connect(loadL68Btn, &QPushButton::clicked, &dlg, [&dlg, this]() {
@@ -863,6 +1117,9 @@ void MainWindow::onSimulatorReset()
     if (hardwareWidget) {
         hardwareWidget->resetHardware();
     }
+    if (!currentListingPath.isEmpty()) {
+        loadListing(currentListingPath); // re-apply *[sim68k] directives
+    }
 }
 
 void MainWindow::onSimulatorRewind()
@@ -881,6 +1138,9 @@ void MainWindow::onSimulatorReload()
     if (hardwareWidget) {
         hardwareWidget->resetHardware();
     }
+    if (!currentListingPath.isEmpty()) {
+        loadListing(currentListingPath); // re-apply *[sim68k] directives
+    }
 }
 
 void MainWindow::onSimulatorLoadS68()
@@ -892,13 +1152,16 @@ void MainWindow::onSimulatorLoadS68()
         currentS68Path = fileName;
         QFileInfo fi(fileName);
         QString listCandidate = fi.path() + "/" + fi.completeBaseName() + ".l68";
+        simManager->loadS68(fileName);
+        // Load the listing after the S-Record: loadS68() calls initSim() which
+        // restores default simulator options, so *[sim68k] directives must be
+        // applied last or they would be lost.
         if (QFileInfo::exists(listCandidate)) {
             loadListing(listCandidate);
         } else {
             listingLines.clear();
             listingWidget->clear();
         }
-        simManager->loadS68(fileName);
     }
 }
 
@@ -915,6 +1178,9 @@ void MainWindow::loadListing(const QString &listingPath)
     }
     listingWidget->loadListing(listingLines);
     simManager->loadListingDirectives(listingLines);
+    // Loading the listing can happen after loadS68() (so *[sim68k] directives
+    // survive initSim()); restore the PC highlight for the current position.
+    listingWidget->highlightPC(static_cast<uint32_t>(simManager->getPC()), false);
 }
 
 void MainWindow::onSimulatorStateChanged()

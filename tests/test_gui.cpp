@@ -6,6 +6,7 @@
 #include <QFileInfo>
 #include <QFile>
 #include <QScrollBar>
+#include <QTextStream>
 #include <iostream>
 #include <cstdlib>
 #include "../src/gui/mainwindow.h"
@@ -33,6 +34,7 @@
 extern int seg7loc, LEDloc, switchLoc, pbLoc;
 extern int irq;
 extern char *memory;
+extern bool simhalt_on;
 
 int main(int argc, char *argv[])
 {
@@ -43,6 +45,10 @@ int main(int argc, char *argv[])
 
     MainWindow window;
     window.show();
+
+    // Verify non-empty window icon & vector app icon
+    TEST_CHECK(!MainWindow::createAppWindowIcon().isNull());
+    TEST_CHECK(!window.windowIcon().isNull());
 
     QString appDir = QCoreApplication::applicationDirPath();
     QString asmBin = appDir + "/easy68k-asm";
@@ -168,6 +174,8 @@ int main(int argc, char *argv[])
     MemoryView memView;
     memView.setMemoryPointer(sim.getMemory(), sim.getMemorySize());
     memView.setBaseAddress(0x1000);
+    memView.resize(800, 400);
+    memView.show();
     QTest::qWait(20);
 
     // Test Fill
@@ -216,6 +224,30 @@ int main(int argc, char *argv[])
     TEST_CHECK(keyHandledAscii);
     TEST_CHECK(sim.getMemory()[0x1000] == 'M');
 
+    // Test Left-Arrow Navigation across nybble and byte boundaries
+    memView.gridArea()->setCursorPosition(1, 13); // Row 1, byte 1 high nybble (col 13)
+    TEST_CHECK(memView.gridArea()->getCursorRow() == 1 && memView.gridArea()->getCursorCol() == 13);
+    // Left arrow moves past space (col 12) directly to byte 0 low nybble (col 11)
+    bool leftHandled1 = memView.gridArea()->handleKeyEdit(Qt::Key_Left, QChar());
+    TEST_CHECK(leftHandled1);
+    TEST_CHECK(memView.gridArea()->getCursorRow() == 1 && memView.gridArea()->getCursorCol() == 11);
+    // Left arrow moves to byte 0 high nybble (col 10)
+    bool leftHandled2 = memView.gridArea()->handleKeyEdit(Qt::Key_Left, QChar());
+    TEST_CHECK(leftHandled2);
+    TEST_CHECK(memView.gridArea()->getCursorRow() == 1 && memView.gridArea()->getCursorCol() == 10);
+    // Left arrow at col 10 wraps to previous row rightmost hex column (col 56)
+    bool leftHandled3 = memView.gridArea()->handleKeyEdit(Qt::Key_Left, QChar());
+    TEST_CHECK(leftHandled3);
+    TEST_CHECK(memView.gridArea()->getCursorRow() == 0 && memView.gridArea()->getCursorCol() == 56);
+
+    // Test Tab key toggle between Hex and ASCII
+    bool tabHandled = memView.gridArea()->handleKeyEdit(Qt::Key_Tab, QChar());
+    TEST_CHECK(tabHandled);
+    TEST_CHECK(memView.gridArea()->getCursorCol() == 73); // ASC_LEFT + 15
+    bool tabHandledBack = memView.gridArea()->handleKeyEdit(Qt::Key_Tab, QChar());
+    TEST_CHECK(tabHandledBack);
+    TEST_CHECK(memView.gridArea()->getCursorCol() == 55); // HEX_LEFT + 15 * 3
+
     // -------------------------------------------------------------------------
     // Grounded Test 3: RegistersView Editing and Mutators
     // -------------------------------------------------------------------------
@@ -233,7 +265,177 @@ int main(int argc, char *argv[])
     TEST_CHECK(regView.getSR() == 0x2700);
 
     // -------------------------------------------------------------------------
-    // Grounded Test 4: StackView
+    // -------------------------------------------------------------------------
+    // Grounded Test 4: Behavioral Verification - SIMHALT, Self-Modifying Code,
+    // and Memory/Listing Interactions
+    // -------------------------------------------------------------------------
+    std::cout << "[GUI TEST] Testing SIMHALT emission and address-indirect shift unpacking...\n";
+
+    auto readTextFile = [](const QString &path) {
+        QStringList lines;
+        QFile f(path);
+        if (f.open(QIODevice::ReadOnly | QIODevice::Text)) {
+            QTextStream in(&f);
+            while (!in.atEnd()) lines.append(in.readLine());
+        }
+        return lines;
+    };
+    auto memByte = [&sim](uint32_t addr) -> uint8_t {
+        return static_cast<uint8_t>(sim.getMemory()[addr & 0xFFFFFF]);
+    };
+    auto memWord = [&](uint32_t addr) -> uint16_t {
+        return static_cast<uint16_t>((static_cast<uint16_t>(memByte(addr)) << 8) |
+                                     static_cast<uint16_t>(memByte(addr + 1)));
+    };
+
+    // 1. SIMHALT $FFFF $FFFF emission across consecutive words and execution halt
+    const QString unpackSrc = appDir + "/gui_test_shift_unpack.x68";
+    const QString unpackS68 = appDir + "/gui_test_shift_unpack.s68";
+    const QString unpackL68 = appDir + "/gui_test_shift_unpack.l68";
+
+    QFile unpackFile(unpackSrc);
+    TEST_CHECK(unpackFile.open(QIODevice::WriteOnly | QIODevice::Text));
+    const char *unpackAsm =
+        "        ORG     $4000\n"
+        "VAR1    DC.W    $1A23\n"
+        "        ORG     $1000\n"
+        "        MOVE.W  #$4000,A0\n"
+        "        MOVE.W  (A0),D0\n"
+        "        LSR.W   #8,D0\n"
+        "        MOVE.W  D0,2(A0)\n"
+        "        MOVE.W  (A0),D0\n"
+        "        LSL.W   #8,D0\n"
+        "        LSR.W   #8,D0\n"
+        "        MOVE.W  D0,4(A0)\n"
+        "        SIMHALT\n"
+        "        END     $1000\n";
+    TEST_CHECK(unpackFile.write(unpackAsm) > 0);
+    unpackFile.close();
+
+    int unpackRc = QProcess::execute(asmBin, {unpackSrc, "-o", unpackS68, "--listing", unpackL68});
+    TEST_CHECK(unpackRc == 0 && QFileInfo::exists(unpackS68) && QFileInfo::exists(unpackL68));
+
+    // Verify Listing classification: headers vs real instructions
+    TEST_CHECK(!ListingScrollArea::isInstructionLine("00001000 Starting Address"));
+    TEST_CHECK(!ListingScrollArea::isInstructionLine("00003000 Starting Address"));
+    TEST_CHECK(ListingScrollArea::isInstructionLine("00003000  3038 3100       10   MOVE.W OP1, D0") == true);
+    TEST_CHECK(!ListingScrollArea::isInstructionLine("00004000= 1A23"));
+
+    TEST_CHECK(sim.loadS68(unpackS68));
+    TEST_CHECK(sim.getPC() == 0x1000);
+    // Two consecutive $FFFF words emitted for SIMHALT (addresses $1016 and $1018)
+    TEST_CHECK(memWord(0x1016) == 0xFFFF);
+    TEST_CHECK(memWord(0x1018) == 0xFFFF);
+
+    // Execute unpacking sequence: $1A23 unpacked into $001A @ $4002 and $0023 @ $4004
+    for (int i = 0; i < 8; ++i) {
+        sim.traceInto();
+    }
+    TEST_CHECK(memWord(0x4002) == 0x001A);
+    TEST_CHECK(memWord(0x4004) == 0x0023);
+    sim.traceInto(); // SIMHALT
+    TEST_CHECK(sim.getPC() == 0x101A);
+    TEST_CHECK(!sim.isRunning());
+
+    // 2. Live Self-Modifying Code, Auto-Jump to startPC, and Rewind vs Reload
+    std::cout << "[GUI TEST] Testing live self-modifying code and Rewind/Reload semantics...\n";
+    const QString selfModSrc = appDir + "/gui_test_self_mod.x68";
+    const QString selfModS68 = appDir + "/gui_test_self_mod.s68";
+    const QString selfModL68 = appDir + "/gui_test_self_mod.l68";
+
+    QFile selfModFile(selfModSrc);
+    TEST_CHECK(selfModFile.open(QIODevice::WriteOnly | QIODevice::Text));
+    const char *selfModAsm =
+        "DATA_SEC EQU $3100\n"
+        "CODE_SEC EQU $3000\n"
+        "        ORG DATA_SEC\n"
+        "OP1     DS.W 1\n"
+        "OP2     DS.W 1\n"
+        "        ORG CODE_SEC\n"
+        "START:\n"
+        "        MOVE.W OP1, D0\n"
+        "        LSL.W  #1, D0\n"
+        "        MOVE.W D0, $300E\n"
+        "        MOVE.W OP2, D0\n"
+        "        LSL.W  #1, D0\n"
+        "        MOVE.W D0, $3004\n"
+        "        MOVE.B #9, D0\n"
+        "        TRAP   #15\n"
+        "        END    START\n";
+    TEST_CHECK(selfModFile.write(selfModAsm) > 0);
+    selfModFile.close();
+
+    int selfModRc = QProcess::execute(asmBin, {selfModSrc, "-o", selfModS68, "--listing", selfModL68});
+    TEST_CHECK(selfModRc == 0 && QFileInfo::exists(selfModS68) && QFileInfo::exists(selfModL68));
+
+    QStringList selfModListing = readTextFile(selfModL68);
+    TEST_CHECK(selfModListing.size() > 5);
+    TEST_CHECK(selfModListing.filter("0000300E  E348").size() == 1);
+
+    // Auto-jump to startPC ($3000) verification
+    window.getSimulatorManager()->loadS68(selfModS68);
+    TEST_CHECK(window.getMemoryView()->getBaseAddress() == 0x3000);
+    TEST_CHECK(window.getMemoryView()->getAddressInputText() == "00003000");
+
+    TEST_CHECK(sim.loadS68(selfModS68));
+    TEST_CHECK(sim.getPC() == 0x3000);
+    TEST_CHECK(memWord(0x300E) == 0xE348); // Assembled instruction: LSL.W #1, D0
+
+    // Set memory data for OP1 and OP2 at $3100
+    sim.getMemory()[0x3100] = static_cast<char>(0x74);
+    sim.getMemory()[0x3101] = static_cast<char>(0xA4);
+    sim.getMemory()[0x3102] = static_cast<char>(0x12);
+    sim.getMemory()[0x3103] = static_cast<char>(0x34);
+
+    sim.traceInto(); // MOVE.W OP1, D0 -> D0 = $74A4
+    TEST_CHECK((static_cast<uint32_t>(sim.getD()[0]) & 0xFFFF) == 0x74A4);
+    sim.traceInto(); // LSL.W #1, D0 -> D0 = $E948
+    TEST_CHECK((static_cast<uint32_t>(sim.getD()[0]) & 0xFFFF) == 0xE948);
+    sim.traceInto(); // MOVE.W D0, $300E -> dynamic self-modification of opcode at $300E!
+    TEST_CHECK(memWord(0x300E) == 0xE948);
+    sim.traceInto(); // MOVE.W OP2, D0 -> D0 = $1234
+    TEST_CHECK((static_cast<uint32_t>(sim.getD()[0]) & 0xFFFF) == 0x1234);
+
+    // CPU decodes dynamically modified opcode ($E948: LSL.W #4, D0) from RAM:
+    sim.traceInto();
+    TEST_CHECK(sim.getPC() == 0x3010);
+    TEST_CHECK((static_cast<uint32_t>(sim.getD()[0]) & 0xFFFF) == 0x2340); // $1234 << 4 == $2340
+
+    sim.traceInto(); // MOVE.W D0, $3004
+    TEST_CHECK(memWord(0x3004) == 0x2340);
+    sim.traceInto(); // MOVE.B #9, D0
+    sim.traceInto(); // TRAP #15 (Task 9)
+    TEST_CHECK(!sim.isRunning());
+
+    // Rewind resets PC/registers to startPC but keeps modified RAM (Sim68K semantics)
+    sim.rewindProgram();
+    TEST_CHECK(sim.getPC() == 0x3000);
+    TEST_CHECK(memWord(0x300E) == 0xE948);
+
+    // Reload restores original binary from S-Record disk image
+    sim.reloadProgram();
+    TEST_CHECK(sim.getPC() == 0x3000);
+    TEST_CHECK(memWord(0x300E) == 0xE348);
+
+    // Directive toggle test: *[sim68k]SIMHALT_OFF
+    sim.loadListingDirectives({"*[sim68k]SIMHALT_OFF"});
+    TEST_CHECK(!simhalt_on);
+    sim.rewindProgram();
+    TEST_CHECK(!simhalt_on);
+    TEST_CHECK(sim.loadS68(selfModS68));
+    TEST_CHECK(simhalt_on); // loadS68 re-enables SIMHALT by default
+
+    // Clean up temporary test files
+    QFile::remove(unpackSrc);
+    QFile::remove(unpackS68);
+    QFile::remove(unpackL68);
+    QFile::remove(selfModSrc);
+    QFile::remove(selfModS68);
+    QFile::remove(selfModL68);
+    std::cout << "[GUI TEST] SIMHALT and Self-Modifying tests PASSED.\n";
+
+    // -------------------------------------------------------------------------
+    // Grounded Test 5: StackView
     // -------------------------------------------------------------------------
     std::cout << "[GUI TEST] Testing StackView...\n";
     StackView stackView;

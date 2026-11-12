@@ -64,10 +64,11 @@ void StackDisplayArea::paintEvent(QPaintEvent * /* event */)
     painter.setFont(font());
     QFontMetrics fm = painter.fontMetrics();
 
-    painter.fillRect(rect(), Qt::white);
+    // VS Code Dark+ background (#1E1E1E)
+    painter.fillRect(rect(), QColor(0x1E, 0x1E, 0x1E));
 
     if (!memoryPtr || memorySize == 0) {
-        painter.setPen(Qt::darkGray);
+        painter.setPen(QColor(0x85, 0x85, 0x85));
         painter.drawText(rect(), Qt::AlignCenter, tr("Simulation memory not allocated."));
         return;
     }
@@ -80,9 +81,13 @@ void StackDisplayArea::paintEvent(QPaintEvent * /* event */)
         int y = r * rowHeight;
         uint32_t rowAddr = (dispAddr + (r * 4)) & 0x00FFFFFF;
 
-        // Draw Address Prefix
+        if (r % 2 == 1) {
+            painter.fillRect(0, y, width(), rowHeight, QColor(0x22, 0x22, 0x23));
+        }
+
+        // Draw Address Prefix (#569CD6 VS Code Blue)
         QString addrText = QString("%1: ").arg(rowAddr, 8, 16, QLatin1Char('0')).toUpper();
-        painter.setPen(Qt::black);
+        painter.setPen(QColor(0x56, 0x9C, 0xD6));
         painter.drawText(6, y + fm.ascent() + (rowHeight - fm.height()) / 2, addrText);
 
         int curX = 6 + fm.horizontalAdvance(addrText);
@@ -98,15 +103,24 @@ void StackDisplayArea::paintEvent(QPaintEvent * /* event */)
             QString byteStr = QString("%1 ").arg(byteVal, 2, 16, QLatin1Char('0')).toUpper();
             int byteWidth = fm.horizontalAdvance(byteStr);
 
-            // Highlight: selected reg (Aqua), system stack A7 (Yellow)
-            QRect byteRect(curX, y, byteWidth, rowHeight);
+            // Highlight: selected reg (VS Code Blue #094771), system stack A7 (Dark Gold #5C4813)
+            QRect byteRect(curX, y, byteWidth - 2, rowHeight);
             if (byteAddr == selectedRegAddr) {
-                painter.fillRect(byteRect, QColor(103, 232, 249)); // Aqua
+                painter.fillRect(byteRect, QColor(0x09, 0x47, 0x71));
+                painter.setPen(QColor(0x37, 0x94, 0xFF));
+                painter.drawRect(byteRect.adjusted(0, 0, -1, -1));
+                painter.setPen(Qt::white);
             } else if (byteAddr == a7StackAddr) {
-                painter.fillRect(byteRect, QColor(254, 240, 138)); // Yellow
+                painter.fillRect(byteRect, QColor(0x5C, 0x48, 0x13));
+                painter.setPen(QColor(0xFF, 0xCC, 0x00));
+                painter.drawRect(byteRect.adjusted(0, 0, -1, -1));
+                painter.setPen(Qt::white);
+            } else if (byteVal != 0 && byteVal != 0xFF) {
+                painter.setPen(QColor(0x4E, 0xC9, 0xB0));
+            } else {
+                painter.setPen(QColor(0xD4, 0xD4, 0xD4));
             }
 
-            painter.setPen(Qt::black);
             painter.drawText(curX, y + fm.ascent() + (rowHeight - fm.height()) / 2, byteStr);
 
             curX += byteWidth;

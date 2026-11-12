@@ -1,6 +1,7 @@
 #include "listingwidget.h"
 #include "simulatormanager.h"
 #include <QPainter>
+#include <QPainterPath>
 #include <QMouseEvent>
 #include <QScrollBar>
 #include <QVBoxLayout>
@@ -10,18 +11,29 @@
 
 bool ListingScrollArea::isInstructionLine(const QString &line)
 {
-    if (line.length() < 12) return false;
+    if (line.length() < 14) return false;
+
+    auto isHexDigit = [](QChar c) {
+        return (c >= '0' && c <= '9') || (c >= 'A' && c <= 'F') || (c >= 'a' && c <= 'f');
+    };
+
     for (int i = 0; i < 8; ++i) {
-        QChar c = line[i];
-        if (!((c >= '0' && c <= '9') || (c >= 'A' && c <= 'F') || (c >= 'a' && c <= 'f'))) {
+        if (!isHexDigit(line[i])) {
             return false;
         }
     }
-    if (line.length() > 8 && line[8] == '=') return false;
-    if (line.length() > 10 && line[10] == '=') return false;
-    if (line.length() > 10 && line[10] != ' ' && line[10] != '\t') return true;
-    if (line.length() > 11 && line[11] != ' ' && line[11] != '\t') return true;
-    return false;
+    if (line[8] == '=') return false;   // EQU / SET value line
+
+    // Real instruction lines always carry at least one four-digit object-code
+    // word in columns 10..13.  Requiring it rejects the "00001000 Starting
+    // Address" header (and similar text) which otherwise looks like code at
+    // the program's entry address.
+    for (int i = 10; i < 14; ++i) {
+        if (!isHexDigit(line[i])) {
+            return false;
+        }
+    }
+    return true;
 }
 
 uint32_t ListingScrollArea::getLineAddress(const QString &line)
@@ -195,6 +207,9 @@ void ListingScrollArea::paintEvent(QPaintEvent * /* event */)
     painter.setFont(font());
     QFontMetrics fm = painter.fontMetrics();
 
+    // VS Code Dark+ viewport background (#1E1E1E)
+    painter.fillRect(viewport()->rect(), QColor(0x1E, 0x1E, 0x1E));
+
     int firstRow = verticalScrollBar()->value();
     int visibleRows = (viewport()->height() / rowHeight) + 1;
     int lastRow = std::min(static_cast<int>(listingLines.size()) - 1, firstRow + visibleRows);
@@ -202,15 +217,15 @@ void ListingScrollArea::paintEvent(QPaintEvent * /* event */)
     int hScroll = horizontalScrollBar()->value();
 
     if (listingLines.isEmpty()) {
-        painter.setPen(Qt::darkGray);
+        painter.setPen(QColor(0x85, 0x85, 0x85));
         painter.drawText(viewport()->rect(), Qt::AlignCenter,
                          tr("No source listing (.L68) loaded.\nAssemble program or load S-Record to view code."));
         return;
     }
 
-    // Paint gutter background
-    painter.fillRect(0, 0, gutterWidth, viewport()->height(), QColor(245, 245, 245));
-    painter.setPen(QColor(210, 210, 210));
+    // Paint gutter background (#252526)
+    painter.fillRect(0, 0, gutterWidth, viewport()->height(), QColor(0x25, 0x25, 0x26));
+    painter.setPen(QColor(0x3C, 0x3C, 0x3C));
     painter.drawLine(gutterWidth - 1, 0, gutterWidth - 1, viewport()->height());
 
     for (int r = firstRow; r <= lastRow; ++r) {
@@ -220,46 +235,165 @@ void ListingScrollArea::paintEvent(QPaintEvent * /* event */)
         uint32_t addr = isInstr ? getLineAddress(line) : 0;
         bool hasBp = (isInstr && simManager && simManager->hasBreakpoint(addr));
 
-        // Draw gutter dot
+        bool isModified = false;
+        uint16_t liveWord = 0;
+        if (isInstr && simManager && simManager->getMemory() && addr + 1 < simManager->getMemorySize() && line.length() >= 14) {
+            bool hexOk = false;
+            uint16_t assembledWord = line.mid(10, 4).toUShort(&hexOk, 16);
+            if (hexOk) {
+                const auto *mem = reinterpret_cast<const unsigned char*>(simManager->getMemory());
+                liveWord = (static_cast<uint16_t>(mem[addr]) << 8) | static_cast<uint16_t>(mem[addr + 1]);
+                if (liveWord != assembledWord) {
+                    isModified = true;
+                }
+            }
+        }
+
+        // Draw line background first
+        QRect textRect(gutterWidth, y, viewport()->width() - gutterWidth, rowHeight);
+        if (r == highlightedLine) {
+            // VS Code Dark+ active debug execution line (#094771 with #007ACC border)
+            painter.fillRect(textRect, QColor(0x09, 0x47, 0x71));
+            painter.setPen(QColor(0x00, 0x7A, 0xCC));
+            painter.drawLine(textRect.left(), textRect.top(), textRect.right(), textRect.top());
+            painter.drawLine(textRect.left(), textRect.bottom(), textRect.right(), textRect.bottom());
+        } else if (r == selectedLine) {
+            // Selected cursor row for Run To Cursor / F2
+            painter.fillRect(textRect, QColor(0x2A, 0x2D, 0x2E));
+            painter.setPen(QColor(0x37, 0x94, 0xFF));
+            painter.drawRect(textRect.adjusted(0, 0, -1, -1));
+        }
+
+        // Draw gutter breakpoint dot & current PC execution arrow
         if (isInstr) {
             painter.setRenderHint(QPainter::Antialiasing, true);
             int dotRadius = 4;
-            int dotCenterX = gutterWidth / 2 - 1;
+            int dotCenterX = 9;
             int dotCenterY = y + rowHeight / 2;
 
             if (hasBp) {
-                // Red dot for breakpoint
-                painter.setBrush(QColor(220, 38, 38));
-                painter.setPen(QColor(153, 27, 27));
+                // Bright VS Code red breakpoint circle (#F14C4C)
+                painter.setBrush(QColor(0xF1, 0x4C, 0x4C));
+                painter.setPen(QColor(0xFF, 0x80, 0x80));
             } else {
-                // Green dot for executable instruction
-                painter.setBrush(QColor(22, 163, 74));
-                painter.setPen(QColor(21, 128, 61));
+                // Subtle green executable line indicator (#4EC9B0)
+                painter.setBrush(QColor(0x38, 0x8A, 0x34));
+                painter.setPen(QColor(0x4E, 0xC9, 0xB0));
             }
             painter.drawEllipse(QPoint(dotCenterX, dotCenterY), dotRadius, dotRadius);
+
+            if (r == highlightedLine) {
+                // Draw yellow VS Code debug execution arrow ▶ in gutter
+                QPainterPath arrow;
+                qreal ay = y + rowHeight / 2.0;
+                arrow.moveTo(15.0, ay - 4.5);
+                arrow.lineTo(23.0, ay);
+                arrow.lineTo(15.0, ay + 4.5);
+                arrow.closeSubpath();
+                painter.setBrush(QColor(0xFF, 0xCC, 0x00));
+                painter.setPen(QColor(0xD9, 0x77, 0x06));
+                painter.drawPath(arrow);
+            }
             painter.setRenderHint(QPainter::Antialiasing, false);
         }
 
-        // Draw line background
-        QRect textRect(gutterWidth, y, viewport()->width() - gutterWidth, rowHeight);
-        if (r == highlightedLine) {
-            // Sim68K classic royal navy blue highlight
-            painter.fillRect(textRect, QColor(0, 0, 128));
-            painter.setPen(Qt::white);
-        } else if (r == selectedLine) {
-            // Selected cursor row for Run To Cursor / F2
-            painter.fillRect(textRect, QColor(219, 234, 254));
-            painter.setPen(QColor(29, 78, 216));
-            painter.drawRect(textRect.adjusted(0, 0, -1, -1));
-            painter.setPen(Qt::black);
-        } else {
-            painter.setPen(Qt::black);
-        }
-
-        // Draw text
-        int textX = gutterWidth + 4 - hScroll;
+        int textX = gutterWidth + 6 - hScroll;
         int textY = y + fm.ascent() + (rowHeight - fm.height()) / 2;
-        painter.drawText(textX, textY, line);
+
+        painter.save();
+        painter.setClipRect(textRect);
+
+        if (r == highlightedLine) {
+            QFont boldFont = font();
+            boldFont.setBold(true);
+            painter.setFont(boldFont);
+            if (line.length() >= 32) {
+                QString addrPart = line.left(10);
+                QString codePart = line.mid(10, 22);
+                QString srcPart = line.mid(32);
+
+                QString codeDisplay = codePart;
+                if (isModified) {
+                    QString memTag = QString("[mem: %1]").arg(liveWord, 4, 16, QChar('0')).toUpper();
+                    QString trimmedCode = codePart.trimmed();
+                    codeDisplay = QString("%1 %2").arg(trimmedCode, memTag);
+                    if (codeDisplay.length() < 22) {
+                        codeDisplay = codeDisplay.leftJustified(22, ' ');
+                    }
+                }
+
+                painter.setPen(Qt::white);
+                painter.drawText(textX, textY, addrPart);
+                int xCode = textX + fm.horizontalAdvance(addrPart);
+
+                if (isModified) {
+                    QRect modBg(xCode - 2, y + 1, fm.horizontalAdvance(codeDisplay) + 4, rowHeight - 2);
+                    painter.fillRect(modBg, QColor(0xFF, 0xCC, 0x00, 50));
+                    painter.setPen(QColor(0xFF, 0xCC, 0x00));
+                } else {
+                    painter.setPen(Qt::white);
+                }
+                painter.drawText(xCode, textY, codeDisplay);
+                int xSrc = xCode + fm.horizontalAdvance(codeDisplay);
+
+                painter.setPen(Qt::white);
+                painter.drawText(xSrc, textY, srcPart);
+            } else {
+                painter.setPen(Qt::white);
+                painter.drawText(textX, textY, line);
+            }
+        } else {
+            QString trimmed = line.trimmed();
+            bool isMetaOrComment = trimmed.startsWith('*') ||
+                                   trimmed.startsWith("Assembler used:") ||
+                                   trimmed.startsWith("Created On:") ||
+                                   trimmed.startsWith("No errors") ||
+                                   trimmed.startsWith("No warnings") ||
+                                   line.contains("Starting Address");
+            if (isMetaOrComment) {
+                painter.setPen(QColor(0x6A, 0x99, 0x55)); // VS Code Comment Green
+                painter.drawText(textX, textY, line);
+            } else if (line.length() >= 32) {
+                QString addrPart = line.left(10);
+                QString codePart = line.mid(10, 22);
+                QString srcPart = line.mid(32);
+
+                // 1. Address column (#9CDCFE light blue)
+                painter.setPen(QColor(0x9C, 0xDC, 0xFE));
+                painter.drawText(textX, textY, addrPart);
+                int xCode = textX + fm.horizontalAdvance(addrPart);
+
+                // 2. Machine code hex column (#4EC9B0 bright teal, or #FFCC00 gold for self-modifying code)
+                QString codeDisplay = codePart;
+                if (isModified) {
+                    QString memTag = QString("[mem: %1]").arg(liveWord, 4, 16, QChar('0')).toUpper();
+                    QString trimmedCode = codePart.trimmed();
+                    codeDisplay = QString("%1 %2").arg(trimmedCode, memTag);
+                    if (codeDisplay.length() < 22) {
+                        codeDisplay = codeDisplay.leftJustified(22, ' ');
+                    }
+                    QRect modBg(xCode - 2, y + 1, fm.horizontalAdvance(codeDisplay) + 4, rowHeight - 2);
+                    painter.fillRect(modBg, QColor(0xFF, 0xCC, 0x00, 40));
+                    painter.setPen(QColor(0xFF, 0xCC, 0x00));
+                } else {
+                    painter.setPen(QColor(0x4E, 0xC9, 0xB0));
+                }
+                painter.drawText(xCode, textY, codeDisplay);
+                int xSrc = xCode + fm.horizontalAdvance(codeDisplay);
+
+                // 3. Source code column (#D4D4D4 crisp light grey, or green if inline comment)
+                if (srcPart.trimmed().startsWith('*')) {
+                    painter.setPen(QColor(0x6A, 0x99, 0x55));
+                } else {
+                    painter.setPen(QColor(0xD4, 0xD4, 0xD4));
+                }
+                painter.drawText(xSrc, textY, srcPart);
+            } else {
+                painter.setPen(QColor(0xD4, 0xD4, 0xD4));
+                painter.drawText(textX, textY, line);
+            }
+        }
+        painter.restore();
     }
 }
 
@@ -279,11 +413,11 @@ void ListingWidget::setupUi()
     layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(0);
 
-    headerLabel = new QLabel(tr(" Address  --------Code---------   Line -----------Source----------->>"), this);
+    headerLabel = new QLabel(tr("   Address  --------Code---------   Line -----------Source----------->>"), this);
     QFont monoFont("Monospace", 9, QFont::Bold);
     monoFont.setStyleHint(QFont::Monospace);
     headerLabel->setFont(monoFont);
-    headerLabel->setStyleSheet("background-color: #E2E8F0; color: #1E293B; padding: 3px 6px; border-bottom: 1px solid #CBD5E1;");
+    headerLabel->setStyleSheet("background-color: #252526; color: #CCCCCC; padding: 4px 6px; border-bottom: 1px solid #3C3C3C;");
     layout->addWidget(headerLabel);
 
     area = new ListingScrollArea(this);

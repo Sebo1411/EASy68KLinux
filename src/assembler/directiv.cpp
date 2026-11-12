@@ -1053,10 +1053,13 @@ int simhalt(int size, char *label, char *op, int *errorPtr)
   if (pass2) {
     //if (listFlag)       // if directive should be listed
     //  listLine(line);
-    output(0xFFFF, WORD_SIZE);  // opcode $FFFF $FFFF
-    output(0xFFFF, WORD_SIZE);  // opcode $FFFF $FFFF
+    output(0xFFFF, WORD_SIZE);  // opcode $FFFF
+    loc += WORD_SIZE;
+    output(0xFFFF, WORD_SIZE);  // opcode $FFFF
+    loc += WORD_SIZE;
+  } else {
+    loc += LONG_SIZE;
   }
-  loc += LONG_SIZE;
 
   return NORMAL;
 }

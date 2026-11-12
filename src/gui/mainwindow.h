@@ -29,6 +29,9 @@ public:
     explicit MainWindow(QWidget *parent = nullptr);
     ~MainWindow() override;
 
+    static QIcon createAppWindowIcon();
+    static QIcon createModernToolbarIcon(const QString &name);
+
     ListingWidget* getListingWidget() const { return listingWidget; }
     QPlainTextEdit* getExecutionLogView() const { return executionLogView; }
     RegistersView* getRegistersView() const { return registersView; }

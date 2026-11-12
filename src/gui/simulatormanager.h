@@ -50,6 +50,7 @@ public:
     uint32_t getMemorySize() const;
 
     long getPC() const;
+    uint32_t getStartPC() const { return startPC; }
     short getSR() const;
     uint64_t getCycles() const;
     const long* getD() const;
@@ -65,6 +66,7 @@ public:
 
 signals:
     void stateChanged();
+    void programLoadedChanged(uint32_t startAddr);
     void simulationHalted(const QString &reason);
     void messageLogged(const QString &msg);
 

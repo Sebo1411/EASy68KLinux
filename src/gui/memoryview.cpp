@@ -162,14 +162,83 @@ bool MemoryGridArea::handleKeyEdit(int key, QChar ch)
         update();
         return true;
     }
-    if (key == Qt::Key_Left) {
-        cursorCol--;
+    if (key == Qt::Key_Left || key == Qt::Key_Backspace) {
+        if (cursorCol >= ASC_LEFT) {
+            cursorCol--;
+            if (cursorCol < ASC_LEFT) {
+                if (cursorRow > 0) {
+                    cursorRow--;
+                    cursorCol = ASC_RIGHT;
+                } else if (currentAddress >= 16) {
+                    setBaseAddress(currentAddress - 16);
+                    cursorCol = ASC_RIGHT;
+                } else {
+                    cursorCol = HEX_RIGHT;
+                }
+            }
+        } else {
+            cursorCol--;
+            if (cursorCol >= HEX_LEFT && ((cursorCol - HEX_LEFT) % 3) == 2) {
+                cursorCol--; // Skip space leftward to land on previous byte's low nybble
+            }
+            if (cursorCol < HEX_LEFT) {
+                if (cursorRow > 0) {
+                    cursorRow--;
+                    cursorCol = HEX_RIGHT;
+                } else if (currentAddress >= 16) {
+                    setBaseAddress(currentAddress - 16);
+                    cursorCol = HEX_RIGHT;
+                } else {
+                    cursorCol = HEX_LEFT;
+                }
+            }
+        }
         clampAndSnapCursor();
         update();
         return true;
     }
     if (key == Qt::Key_Right) {
-        cursorCol++;
+        if (cursorCol <= HEX_RIGHT) {
+            cursorCol++;
+            if (cursorCol <= HEX_RIGHT && ((cursorCol - HEX_LEFT) % 3) == 2) {
+                cursorCol++; // Skip space rightward to land on next byte's high nybble
+            }
+            if (cursorCol > HEX_RIGHT) {
+                cursorCol = HEX_LEFT;
+                cursorRow++;
+                if (cursorRow >= numRows) {
+                    cursorRow = numRows - 1;
+                    if (currentAddress + 16 < memorySize) {
+                        setBaseAddress(currentAddress + 16);
+                    }
+                }
+            }
+        } else {
+            cursorCol++;
+            if (cursorCol > ASC_RIGHT) {
+                cursorCol = ASC_LEFT;
+                cursorRow++;
+                if (cursorRow >= numRows) {
+                    cursorRow = numRows - 1;
+                    if (currentAddress + 16 < memorySize) {
+                        setBaseAddress(currentAddress + 16);
+                    }
+                }
+            }
+        }
+        clampAndSnapCursor();
+        update();
+        return true;
+    }
+    if (key == Qt::Key_Tab) {
+        // Toggle between Hex and ASCII for the same byte
+        if (cursorCol <= HEX_RIGHT) {
+            int byteIdx = (cursorCol - HEX_LEFT) / 3;
+            cursorCol = ASC_LEFT + byteIdx;
+        } else {
+            int byteIdx = cursorCol - ASC_LEFT;
+            cursorCol = HEX_LEFT + byteIdx * 3;
+        }
         clampAndSnapCursor();
         update();
         return true;
@@ -280,19 +349,19 @@ void MemoryGridArea::paintEvent(QPaintEvent * /* event */)
     painter.setFont(font());
     QFontMetrics fm = painter.fontMetrics();
 
-    // Fill background
-    painter.fillRect(rect(), Qt::white);
+    // VS Code Dark+ background (#1E1E1E)
+    painter.fillRect(rect(), QColor(0x1E, 0x1E, 0x1E));
 
-    // Row 0: Fixed Header
+    // Row 0: Fixed Header (#252526)
     QString header = "Address   00 01 02 03 04 05 06 07 08 09 0A 0B 0C 0D 0E 0F  0123456789ABCDEF";
-    painter.fillRect(0, 0, width(), rowHeight, QColor(241, 245, 249));
-    painter.setPen(QColor(71, 85, 105));
+    painter.fillRect(0, 0, width(), rowHeight, QColor(0x25, 0x25, 0x26));
+    painter.setPen(QColor(0x9C, 0xDC, 0xFE));
     painter.drawText(4, fm.ascent() + (rowHeight - fm.height()) / 2, header);
-    painter.setPen(QColor(203, 213, 225));
+    painter.setPen(QColor(0x3C, 0x3C, 0x3C));
     painter.drawLine(0, rowHeight - 1, width(), rowHeight - 1);
 
     if (!memoryPtr || memorySize == 0) {
-        painter.setPen(Qt::darkGray);
+        painter.setPen(QColor(0x85, 0x85, 0x85));
         painter.drawText(rect(), Qt::AlignCenter, tr("Simulation memory not allocated."));
         return;
     }
@@ -304,8 +373,14 @@ void MemoryGridArea::paintEvent(QPaintEvent * /* event */)
         if (rowAddr >= memorySize) break;
 
         int y = (r + 1) * rowHeight;
+        int baselineY = y + fm.ascent() + (rowHeight - fm.height()) / 2;
 
-        // Build formatted string
+        // Subtle alternating row tint
+        if (r % 2 == 1) {
+            painter.fillRect(0, y, width(), rowHeight, QColor(0x22, 0x22, 0x23));
+        }
+
+        // Build formatted string for metrics
         QString rowText = QString("%1: ").arg(rowAddr, 8, 16, QLatin1Char('0')).toUpper();
 
         QString asciiPart;
@@ -334,13 +409,56 @@ void MemoryGridArea::paintEvent(QPaintEvent * /* event */)
             int cellX = 4 + fm.horizontalAdvance(rowText.left(cursorCol));
             int cellW = std::max(charWidth, fm.horizontalAdvance(rowText.mid(cursorCol, 1)));
             QRect cellRect(cellX, y, cellW, rowHeight);
-            painter.fillRect(cellRect, hasFocus() ? QColor(191, 219, 254) : QColor(226, 232, 240));
-            painter.setPen(hasFocus() ? QColor(29, 78, 216) : QColor(100, 116, 139));
+            painter.fillRect(cellRect, hasFocus() ? QColor(0x09, 0x47, 0x71) : QColor(0x2A, 0x2D, 0x2E));
+            painter.setPen(hasFocus() ? QColor(0x37, 0x94, 0xFF) : QColor(0x6E, 0x76, 0x81));
             painter.drawRect(cellRect.adjusted(0, 0, -1, -1));
         }
 
-        painter.setPen(Qt::black);
-        painter.drawText(4, y + fm.ascent() + (rowHeight - fm.height()) / 2, rowText);
+        // 1. Draw Address column (#569CD6 VS Code Blue)
+        QString addrPrefix = rowText.left(10);
+        painter.setPen(QColor(0x56, 0x9C, 0xD6));
+        painter.drawText(4, baselineY, addrPrefix);
+
+        // 2. Draw Hex bytes (non-zero bytes highlighted in #4EC9B0 teal, zero bytes in #D4D4D4)
+        for (int b = 0; b < 16; ++b) {
+            uint32_t byteAddr = rowAddr + b;
+            if (byteAddr >= memorySize) break;
+            uint8_t val = static_cast<uint8_t>(memoryPtr[byteAddr]);
+            int colStart = HEX_LEFT + b * 3;
+            int xByte = 4 + fm.horizontalAdvance(rowText.left(colStart));
+            QString byteHex = rowText.mid(colStart, 2);
+
+            bool isCursorOnByte = (cursorVisible && r == cursorRow &&
+                                   (cursorCol == colStart || cursorCol == colStart + 1));
+            if (isCursorOnByte) {
+                painter.setPen(Qt::white);
+            } else if (val != 0) {
+                painter.setPen(QColor(0x4E, 0xC9, 0xB0));
+            } else {
+                painter.setPen(QColor(0x85, 0x85, 0x85));
+            }
+            painter.drawText(xByte, baselineY, byteHex);
+        }
+
+        // 3. Draw ASCII characters (#CE9178 for printable, #5A5A5A for dots)
+        for (int b = 0; b < 16; ++b) {
+            uint32_t byteAddr = rowAddr + b;
+            if (byteAddr >= memorySize) break;
+            uint8_t val = static_cast<uint8_t>(memoryPtr[byteAddr]);
+            int colPos = ASC_LEFT + b;
+            int xAsc = 4 + fm.horizontalAdvance(rowText.left(colPos));
+            QString chStr = rowText.mid(colPos, 1);
+
+            bool isCursorOnAsc = (cursorVisible && r == cursorRow && cursorCol == colPos);
+            if (isCursorOnAsc) {
+                painter.setPen(Qt::white);
+            } else if (val >= 32 && val <= 126) {
+                painter.setPen(QColor(0xCE, 0x91, 0x78));
+            } else {
+                painter.setPen(QColor(0x5A, 0x5A, 0x5A));
+            }
+            painter.drawText(xAsc, baselineY, chStr);
+        }
     }
 }
 
@@ -363,62 +481,79 @@ void MemoryView::setupUi()
     mainLayout->setContentsMargins(4, 4, 4, 4);
     mainLayout->setSpacing(4);
 
-    // Top control bar
-    auto *topLayout = new QHBoxLayout();
-    topLayout->setSpacing(6);
+    // Row 1: Address Navigation Bar (wide enough for full 8-digit hex address!)
+    auto *navLayout = new QHBoxLayout();
+    navLayout->setSpacing(6);
 
-    topLayout->addWidget(new QLabel(tr("$ Address:"), this));
+    navLayout->addWidget(new QLabel(tr("$ Address:"), this));
     addrInput = new QLineEdit("00001000", this);
     addrInput->setFont(monoFont);
-    addrInput->setMaximumWidth(85);
-    topLayout->addWidget(addrInput);
+    addrInput->setMaxLength(8);
+    addrInput->setMinimumWidth(100);
+    addrInput->setMaximumWidth(120);
+    addrInput->setAlignment(Qt::AlignCenter);
+    navLayout->addWidget(addrInput);
 
     auto *goBtn = new QPushButton(tr("Go"), this);
-    topLayout->addWidget(goBtn);
+    navLayout->addWidget(goBtn);
 
-    topLayout->addSpacing(8);
-
-    topLayout->addWidget(new QLabel(tr("From: $"), this));
-    fromInput = new QLineEdit("00001000", this);
-    fromInput->setFont(monoFont);
-    fromInput->setMaximumWidth(85);
-    topLayout->addWidget(fromInput);
-
-    topLayout->addWidget(new QLabel(tr("To: $"), this));
-    toInput = new QLineEdit("0000101F", this);
-    toInput->setFont(monoFont);
-    toInput->setMaximumWidth(85);
-    topLayout->addWidget(toInput);
-
-    topLayout->addWidget(new QLabel(tr("Bytes: $"), this));
-    bytesInput = new QLineEdit("00", this);
-    bytesInput->setFont(monoFont);
-    bytesInput->setMaximumWidth(85);
-    topLayout->addWidget(bytesInput);
-
-    copyBtn = new QPushButton(tr("Copy"), this);
-    topLayout->addWidget(copyBtn);
-
-    fillBtn = new QPushButton(tr("Fill"), this);
-    topLayout->addWidget(fillBtn);
-
-    saveBtn = new QPushButton(tr("Save"), this);
-    topLayout->addWidget(saveBtn);
-
-    topLayout->addSpacing(8);
+    navLayout->addSpacing(8);
 
     rowUpBtn = new QPushButton(tr("Row ▲"), this);
-    topLayout->addWidget(rowUpBtn);
+    navLayout->addWidget(rowUpBtn);
     rowDownBtn = new QPushButton(tr("Row ▼"), this);
-    topLayout->addWidget(rowDownBtn);
+    navLayout->addWidget(rowDownBtn);
 
     pageUpBtn = new QPushButton(tr("Page ▲"), this);
-    topLayout->addWidget(pageUpBtn);
+    navLayout->addWidget(pageUpBtn);
     pageDownBtn = new QPushButton(tr("Page ▼"), this);
-    topLayout->addWidget(pageDownBtn);
+    navLayout->addWidget(pageDownBtn);
 
-    topLayout->addStretch();
-    mainLayout->addLayout(topLayout);
+    navLayout->addStretch();
+    mainLayout->addLayout(navLayout);
+
+    // Row 2: Range Operations Bar (From / To / Bytes / Copy / Fill / Save)
+    auto *rangeLayout = new QHBoxLayout();
+    rangeLayout->setSpacing(6);
+
+    rangeLayout->addWidget(new QLabel(tr("From: $"), this));
+    fromInput = new QLineEdit("00001000", this);
+    fromInput->setFont(monoFont);
+    fromInput->setMaxLength(8);
+    fromInput->setMinimumWidth(90);
+    fromInput->setMaximumWidth(110);
+    fromInput->setAlignment(Qt::AlignCenter);
+    rangeLayout->addWidget(fromInput);
+
+    rangeLayout->addWidget(new QLabel(tr("To: $"), this));
+    toInput = new QLineEdit("0000101F", this);
+    toInput->setFont(monoFont);
+    toInput->setMaxLength(8);
+    toInput->setMinimumWidth(90);
+    toInput->setMaximumWidth(110);
+    toInput->setAlignment(Qt::AlignCenter);
+    rangeLayout->addWidget(toInput);
+
+    rangeLayout->addWidget(new QLabel(tr("Bytes: $"), this));
+    bytesInput = new QLineEdit("00", this);
+    bytesInput->setFont(monoFont);
+    bytesInput->setMaxLength(8);
+    bytesInput->setMinimumWidth(80);
+    bytesInput->setMaximumWidth(100);
+    bytesInput->setAlignment(Qt::AlignCenter);
+    rangeLayout->addWidget(bytesInput);
+
+    copyBtn = new QPushButton(tr("Copy"), this);
+    rangeLayout->addWidget(copyBtn);
+
+    fillBtn = new QPushButton(tr("Fill"), this);
+    rangeLayout->addWidget(fillBtn);
+
+    saveBtn = new QPushButton(tr("Save"), this);
+    rangeLayout->addWidget(saveBtn);
+
+    rangeLayout->addStretch();
+    mainLayout->addLayout(rangeLayout);
 
     // Central interactive memory grid
     grid = new MemoryGridArea(this);
@@ -451,6 +586,16 @@ void MemoryView::setMemoryPointer(char *mem, uint32_t memSize)
 void MemoryView::setBaseAddress(uint32_t addr)
 {
     grid->setBaseAddress(addr);
+    uint32_t aligned = grid->getBaseAddress();
+    addrInput->setText(QString("%1").arg(aligned, 8, 16, QLatin1Char('0')).toUpper());
+}
+
+void MemoryView::setProgramStartAddress(uint32_t startAddr)
+{
+    setBaseAddress(startAddr);
+    uint32_t aligned = grid->getBaseAddress();
+    fromInput->setText(QString("%1").arg(aligned, 8, 16, QLatin1Char('0')).toUpper());
+    toInput->setText(QString("%1").arg(aligned + 0x1F, 8, 16, QLatin1Char('0')).toUpper());
 }
 
 uint32_t MemoryView::getBaseAddress() const

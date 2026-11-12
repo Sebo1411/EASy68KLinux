@@ -12,6 +12,7 @@ RegisterLineEdit::RegisterLineEdit(QWidget *parent)
 {
     setAlignment(Qt::AlignCenter);
     setMaxLength(8);
+    setMinimumWidth(84);
 }
 
 void RegisterLineEdit::mouseDoubleClickEvent(QMouseEvent *event)
@@ -128,6 +129,7 @@ void RegistersView::setupUi()
     srEdit = new RegisterLineEdit(groupBox);
     srEdit->setFont(monoFont);
     srEdit->setMaxLength(16);
+    srEdit->setMinimumWidth(148);
     srEdit->setValidator(binValidator);
     srEdit->setText("0010000000000000");
     grid->addWidget(srLabel, 1, 8);

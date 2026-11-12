@@ -12,8 +12,16 @@ extern bool inputMode;
 extern int runToAddr;
 extern int stepToAddr;
 
+namespace {
+// The simulator core keeps its 16 MB address space in the global `memory`
+// pointer, so several SimulatorManager instances share one buffer.  Track the
+// instances and only release the buffer when the last one goes away.
+int simulatorManagerInstances = 0;
+}
+
 SimulatorManager::SimulatorManager(QObject *parent) : QObject(parent)
 {
+    ++simulatorManagerInstances;
     if (!memory) {
         memory = new char[MEMSIZE]();
     }
@@ -37,7 +45,8 @@ SimulatorManager::~SimulatorManager()
     if (autoTraceTimer) {
         autoTraceTimer->stop();
     }
-    if (memory) {
+    if (--simulatorManagerInstances <= 0 && memory) {
+        simulatorManagerInstances = 0;
         delete[] memory;
         memory = nullptr;
     }
@@ -54,6 +63,7 @@ bool SimulatorManager::loadS68(const QString &filePath)
         memory[pbLoc & ADDRMASK] = static_cast<char>(0xFF);
     }
     initSim();
+    simhalt_on = true;  // Sim68K defaults SIMHALT on whenever a program is opened
 
     std::string pathStr = filePath.toStdString();
     if (loadSrec(const_cast<char*>(pathStr.c_str())) != SUCCESS) {
@@ -68,6 +78,7 @@ bool SimulatorManager::loadS68(const QString &filePath)
     emit messageLogged(tr("Loaded S-Record: %1 (Initial PC = 0x%2)")
                        .arg(QFileInfo(filePath).fileName())
                        .arg(startPC, 8, 16, QLatin1Char('0')));
+    emit programLoadedChanged(startPC);
     emit stateChanged();
     return true;
 }
